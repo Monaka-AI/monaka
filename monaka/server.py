@@ -47,13 +47,13 @@ def parse2json(modelname, dicname):
     return out
     
 @cmd.command()
-def run(device: str=-1, model_dir: str=RESC_DIR, dic_dir: str=RESC_DIR):
+def run(device: str=-1, model_dir: str=RESC_DIR, dic_dir: str=RESC_DIR, port: int=5000):
     app.config['DEVICE'] = device
 
     app.config['MODEL_DIR'] = model_dir
     app.config['DIC_DIR'] = dic_dir
 
-    app.run()
+    app.run(port=port)
 
 if __name__ == '__main__':
     app()
