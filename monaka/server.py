@@ -48,10 +48,7 @@ def parse2json(modelname, dicname):
     
 @cmd.command()
 def run(device: str=-1, model_dir: str=RESC_DIR, dic_dir: str=RESC_DIR):
-    if device < 0:
-        app.config['DEVICE'] = 'cpu'
-    else:
-        app.config['DEVICE'] = device
+    app.config['DEVICE'] = device
 
     app.config['MODEL_DIR'] = model_dir
     app.config['DIC_DIR'] = dic_dir
