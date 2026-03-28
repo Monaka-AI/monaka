@@ -1115,7 +1115,7 @@ class EnsemblePredictor:
             prv_tokens = None
             prv_pos = None
             prv_labels = None
-            for prd, wids, sentence, tokens, pos, meta, fold, top in zip(pred_np, word_ids, data["sentence"], data["tokens"], data["pos"], data.get("features", data["pos"]), data["fold"], tops_np):
+            for prd, wids, sentence, tokens, pos, meta, fold, top in zip(pred_np, word_ids, data["sentence"], data["tokens"], data["pos"], data.get("features", {}), data["fold"], tops_np):
                 if not dataset.label_for_all_subwords:
                     labels = self.extract_labels(None, prd)
                 else:
@@ -1125,6 +1125,7 @@ class EnsemblePredictor:
                     res = self.apply_single_suw_rule(res, top)
                     res["sentence"] = sentence
                     res["features"] = meta
+                    res["meta"] = meta
                     out = encoder.encode(**res)
                     yield out
                 elif fold == 0:
@@ -1222,6 +1223,7 @@ class EnsemblePredictor:
                     res = self.decoder.decode(tokens, pos, labels)
                     res = self.apply_single_suw_rule(res, top)
                     res["sentence"] = sentence
+                    res["features"] = meta
                     res["meta"] = meta
                     out = encoder.encode(**res)
                     yield out
