@@ -1125,8 +1125,9 @@ class EnsemblePredictor:
                     res = self.apply_single_suw_rule(res, top)
                     res["sentence"] = sentence
                     res["features"] = meta
-                    res["meta"] = meta
+                    res["meta"] = labels
                     out = encoder.encode(**res)
+                    out["orig_labels"] = labels
                     yield out
                 elif fold == 0:
                     logger.warning(f"fold: 0 {''.join(tokens)}")
@@ -1143,7 +1144,9 @@ class EnsemblePredictor:
                     res = self.apply_single_suw_rule(res, top)
                     res["sentence"] = sentence
                     res["features"] = meta
+                    res["meta"] = prv_labels
                     out = encoder.encode(**res)
+                    out["orig_labels"] = prv_labels
                     yield out
 
     def apply_single_suw_rule(self, decoder_out, top):
@@ -1219,6 +1222,7 @@ class EnsemblePredictor:
                     labels = self.extract_labels(None, prd)
                 else:
                     labels = self.extract_labels(wids, prd)
+                logger.warning(labels)
                 if fold < 0:
                     res = self.decoder.decode(tokens, pos, labels)
                     res = self.apply_single_suw_rule(res, top)
