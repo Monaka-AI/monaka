@@ -1125,9 +1125,8 @@ class EnsemblePredictor:
                     res = self.apply_single_suw_rule(res, top)
                     res["sentence"] = sentence
                     res["features"] = meta
-                    res["meta"] = labels
+                    res["meta"] = meta
                     out = encoder.encode(**res)
-                    out["orig_labels"] = labels
                     yield out
                 elif fold == 0:
                     logger.warning(f"fold: 0 {''.join(tokens)}")
@@ -1144,9 +1143,8 @@ class EnsemblePredictor:
                     res = self.apply_single_suw_rule(res, top)
                     res["sentence"] = sentence
                     res["features"] = meta
-                    res["meta"] = prv_labels
+                    res["meta"] = meta
                     out = encoder.encode(**res)
-                    out["orig_labels"] = prv_labels
                     yield out
 
     def apply_single_suw_rule(self, decoder_out, top):
@@ -1161,7 +1159,7 @@ class EnsemblePredictor:
             if s < 0:
                 continue
             if '可能' not in pos:
-                decoder_out['luw'][s] = pos
+                decoder_out['luw'][s] = luw
             elif '名詞-普通名詞-助数詞可能' in pos:
                 decoder_out['luw'][s] = '名詞-普通名詞-一般'
             elif '動詞-非自立可能' in pos:
