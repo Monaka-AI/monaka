@@ -1159,7 +1159,11 @@ class EnsemblePredictor:
             if s < 0:
                 continue
             if '可能' not in pos:
-                decoder_out['luw'][s] = luw
+                if luw in pos: ## MeCabの品詞に活用型が含まれるので、長単位品詞がMeCabと一致していればそれを使う。
+                    decoder_out['luw'][s] = luw
+                else: # 品詞が異なる場合は、やむをえずMeCabを使う。(副作用ありなので、要相談)
+                    decoder_out['luw'][s] = pos
+
             elif '名詞-普通名詞-助数詞可能' in pos:
                 decoder_out['luw'][s] = '名詞-普通名詞-一般'
             elif '動詞-非自立可能' in pos:
