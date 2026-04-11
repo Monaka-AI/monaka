@@ -62,6 +62,14 @@ class Decoder(Registrable):
 @Decoder.register("LUW-Bunsetsu")
 class LUWChunkDecoder(Decoder):
 
+    @staticmethod
+    def is_space(luw_pos: str):
+        if luw_pos.startswith("補助記号"):
+            return True
+        elif luw_pos.startswith("空白"):
+            return True
+        return False
+
     def decode(self, tokens: List[str], pos: List[str], labels: List[str], pos_level:int = -1, **kwargs) -> Dict:
         """
         labelsが以下の形式の場合に利用する
@@ -69,14 +77,27 @@ class LUWChunkDecoder(Decoder):
         """
         luw = list()
         chunk = list()
+        begin_with_space = True
         for l in labels:
+            lpos = self.luw_pos(l[2:], pos_level)
+            if begin_with_space:
+                chunk.append("*")
+
+                if l in ["unk", "pad"]:
+                    chunk.append("B")
+                else:
+                    luw.append(lpos)
+
+                begin_with_space = self.is_space(lpos)
+                continue
+            
             if l in ["unk", "pad"]:
                 chunk.append("B")
                 luw.append("*")
             else:
                 chunk.append(l[0])
                 if l[1] == "B":
-                    luw.append(self.luw_pos(l[2:], pos_level))
+                    luw.append(lpos)
                 else:
                     luw.append("*")
         if len(chunk) > 0: # 銭湯は必ずB
