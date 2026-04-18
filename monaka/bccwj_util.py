@@ -1,6 +1,7 @@
 import typer
 import json
 import csv
+import stanza
 
 from typing import List
 
@@ -175,6 +176,29 @@ def evaluate(gold: str, pred: str, corrects :List[str]=["luw(L)"], errors :List[
     for field, d in output.items():
         print(f"{field} count: {d['a']} correct: {d['c']} acc: {d['c']/d['a']}")
 
-    
+
+def bcploader(fname: str):
+    with open(fname) as f:
+        rd = csv.reader(f)
+        buf = list()
+        for row in rd:
+            d = {k: v for k, v in zip(BCPEXPORT_LIST, row)}
+            if d['boundary(S)'] == 'B':
+                yield buf
+                buf.clear()
+            buf.append(d)
+    if len(buf) > 0:
+        yield buf
+
+
+@app.command()
+def extract_ner(bcpexportfile: str):
+    nlp = spacy.load('ja_ginza_electra')
+    for sent in bcploader(bcpexportfile):
+        sentence = ''.join([d['originalText(S)'] for d in sent])
+        doc = nlp(sentence)
+
+
+
 if __name__ == "__main__":
     app()

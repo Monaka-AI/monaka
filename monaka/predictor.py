@@ -81,7 +81,7 @@ class LUWChunkDecoder(Decoder):
         for l in labels:
             lpos = self.luw_pos(l[2:], pos_level)
             if begin_with_space:
-                chunk.append("*")
+                chunk.append("I")
 
                 if l in ["unk", "pad"]:
                     chunk.append("B")
@@ -917,7 +917,7 @@ class Predictor:
                 yield encoder.encode(**res)
 
     def predict_raw(self, input: str, encoder_name: str, batch_size: int = 8, device: str="cpu"):
-        print(input, file=sys.stderr)
+        #print(input, file=sys.stderr)
         encoder = Encoder.by_name(encoder_name)()
 
         dataset = LUWJsonLDataset(input, **self.dataeset_options)
@@ -1245,7 +1245,7 @@ class EnsemblePredictor:
                     labels = self.extract_labels(None, prd)
                 else:
                     labels = self.extract_labels(wids, prd)
-                logger.warning(labels)
+                #logger.warning(labels)
                 if fold < 0:
                     res = self.decoder.decode(tokens, pos, labels)
                     res = self.apply_single_suw_rule(res, top)

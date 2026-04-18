@@ -462,10 +462,14 @@ def to_sentence(loader: List[dict]):
     buf = list()
     for d in loader:
         #print(d)
-        if d['boundary(S)'] == 'B' and len(buf) > 0:
-            yield buf
-            buf.clear()
-        buf.append(d)
+        try:
+            if d['boundary(S)'] == 'B' and len(buf) > 0:
+                yield buf
+                buf.clear()
+            buf.append(d)
+        except Exception as e:
+            print(d)
+            raise e
     yield buf
 
 
@@ -502,18 +506,30 @@ def predict_bccwj(inputfile: Path, outfile: str, model_dirs: List[str], device: 
     
     with open(outfile, 'w') as f:
         for b in reader:
-            prd = EnsemblePredictor(model_dirs, device=device)
-            try:
-                for out in prd.predict_raw(b, output_format, batch):
+
+            _batch = batch
+            while _batch > 0:
+                try:
+                    prd = EnsemblePredictor(model_dirs, device=device)
+                    outs = list(prd.predict_raw(b, output_format, _batch))
+                    # success !
+                    break
+                except RuntimeError: # CUDA out of memory
+                    print(f"Error batch size {_batch} is too large.", file=sys.stderr)
+                    del prd
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    
+                    if _batch < 2:
+                        break
+                    else:
+                        _batch = int(_batch/2)
+
+                except Exception as e:
+                    raise e
+
+            for out in outs:
                     print(out, file=f)
-            except Exception as e:
-                print(e, file=sys.stderr)
-                del prd
-                gc.collect()
-                torch.cuda.empty_cache()
-                prd = EnsemblePredictor(model_dirs, device=device)
-                out = prd.predict_raw(b, output_format, int(batch/2))
-                print(out, file=f)
                 
             del prd
             gc.collect()
