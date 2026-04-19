@@ -69,6 +69,12 @@ class LUWChunkDecoder(Decoder):
         elif luw_pos.startswith("空白"):
             return True
         return False
+    
+    @staticmethod
+    def is_passthrough(pos: str):
+        if '漢文' in pos:
+            return True
+        return False
 
     def decode(self, tokens: List[str], pos: List[str], labels: List[str], pos_level:int = -1, **kwargs) -> Dict:
         """
@@ -78,7 +84,12 @@ class LUWChunkDecoder(Decoder):
         luw = list()
         chunk = list()
         begin_with_space = True
-        for l in labels:
+        for l, p in zip(labels, pos):
+            if self.is_passthrough(p): #SUWをそのまま出力するシリーズ
+                chunk.append('B')
+                luw.append(p)
+                continue
+
             lpos = self.luw_pos(l[2:], pos_level)
             if begin_with_space:
                 chunk.append("I")
@@ -1116,57 +1127,57 @@ class EnsemblePredictor:
         dataset = LUWJsonLDataset(data, **self.dataeset_options)
         dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=LUWJsonLDataset.collate_function)
 
+        with torch.no_grad():
+            for data in dataloader:
+                #word_ids = [sbw.word_ids() for sbw in data["subwords"]]
+                subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(self.device)
+                word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(self.device)
+                pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(self.device) if "pos_ids" in data else None
 
-        for data in dataloader:
-            #word_ids = [sbw.word_ids() for sbw in data["subwords"]]
-            subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(self.device)
-            word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(self.device)
-            pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(self.device) if "pos_ids" in data else None
+                # average ensemble
+                out = 0.
+                for model in self.models:
+                    out = out + model(subwords, word_ids, pos_ids)
 
-            # average ensemble
-            out = 0.
-            for model in self.models:
-                out = out + model(subwords, word_ids, pos_ids)
+                pred = torch.argmax(out, dim=-1) # batch, len, 
+                tops = torch.topk(out, len(self.label_dic), dim=-1)
 
-            pred = torch.argmax(out, dim=-1) # batch, len, 
-            tops = torch.topk(out, len(self.label_dic), dim=-1)
-
-            pred_np = pred.detach().cpu().numpy()
-            tops_np = tops.indices.detach().cpu().numpy()
-            prv_tokens = None
-            prv_pos = None
-            prv_labels = None
-            for prd, wids, sentence, tokens, pos, meta, fold, top in zip(pred_np, word_ids, data["sentence"], data["tokens"], data["pos"], data.get("features", {}), data["fold"], tops_np):
-                if not dataset.label_for_all_subwords:
-                    labels = self.extract_labels(None, prd)
-                else:
-                    labels = self.extract_labels(wids, prd)
-                if fold < 0:
-                    res = self.decoder.decode(tokens, pos, labels)
-                    res = self.apply_single_suw_rule(res, top)
-                    res["sentence"] = sentence
-                    res["features"] = meta
-                    res["meta"] = meta
-                    out = encoder.encode(**res)
-                    yield out
-                elif fold == 0:
-                    logger.warning(f"fold: 0 {''.join(tokens)}")
-                    prv_tokens = tokens
-                    prv_pos = pos
-                    prv_labels = labels
-                else: #fold == 1
-                    logger.warning(f"fold: 1 {''.join(tokens)}")
-                    prv_tokens.extend(tokens)
-                    prv_pos.extend(pos)
-                    prv_labels.extend(labels)
-                    logger.warning(f"unfolding {''.join(prv_tokens)}")
-                    res = self.decoder.decode(prv_tokens, prv_pos, prv_labels)
-                    res = self.apply_single_suw_rule(res, top)
-                    res["sentence"] = sentence
-                    res["features"] = meta
-                    res["meta"] = meta
-                    out = encoder.encode(**res)
-                    yield out
+                pred_np = pred.detach().cpu().numpy()
+                tops_np = tops.indices.detach().cpu().numpy()
+                prv_tokens = None
+                prv_pos = None
+                prv_labels = None
+                for prd, wids, sentence, tokens, pos, meta, fold, top in zip(pred_np, word_ids, data["sentence"], data["tokens"], data["pos"], data.get("features", {}), data["fold"], tops_np):
+                    if not dataset.label_for_all_subwords:
+                        labels = self.extract_labels(None, prd)
+                    else:
+                        labels = self.extract_labels(wids, prd)
+                    if fold < 0:
+                        res = self.decoder.decode(tokens, pos, labels)
+                        res = self.apply_single_suw_rule(res, top)
+                        res["sentence"] = sentence
+                        res["features"] = meta
+                        res["meta"] = meta
+                        out = encoder.encode(**res)
+                        yield out
+                    elif fold == 0:
+                        logger.warning(f"fold: 0 {''.join(tokens)}")
+                        prv_tokens = tokens
+                        prv_pos = pos
+                        prv_labels = labels
+                    else: #fold == 1
+                        logger.warning(f"fold: 1 {''.join(tokens)}")
+                        prv_tokens.extend(tokens)
+                        prv_pos.extend(pos)
+                        prv_labels.extend(labels)
+                        logger.warning(f"unfolding {''.join(prv_tokens)}")
+                        res = self.decoder.decode(prv_tokens, prv_pos, prv_labels)
+                        res = self.apply_single_suw_rule(res, top)
+                        res["sentence"] = sentence
+                        res["features"] = meta
+                        res["meta"] = meta
+                        out = encoder.encode(**res)
+                        yield out
 
     def apply_single_suw_rule(self, decoder_out, top):
         singles = list(range(len(decoder_out["luw"])))
@@ -1221,56 +1232,57 @@ class EnsemblePredictor:
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=LUWJsonLDataset.collate_function)
 
 
-        for data in dataloader:
-            #word_ids = [sbw.word_ids() for sbw in data["subwords"]]
-            subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(self.device)
-            word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(self.device)
-            pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(self.device) if "pos_ids" in data else None
+        with torch.no_grad():
+            for data in dataloader:
+                #word_ids = [sbw.word_ids() for sbw in data["subwords"]]
+                subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(self.device)
+                word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(self.device)
+                pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(self.device) if "pos_ids" in data else None
 
-            # average ensemble
-            out = 0.
-            for model in self.models:
-                out = out + model(subwords, word_ids, pos_ids)
+                # average ensemble
+                out = 0.
+                for model in self.models:
+                    out = out + model(subwords, word_ids, pos_ids)
 
-            pred = torch.argmax(out, dim=-1) # batch, len, 
-            tops = torch.topk(out, len(self.label_dic), dim=-1)
+                pred = torch.argmax(out, dim=-1) # batch, len, 
+                tops = torch.topk(out, len(self.label_dic), dim=-1)
 
-            pred_np = pred.detach().cpu().numpy()
-            tops_np = tops.indices.detach().cpu().numpy()
-            prv_tokens = None
-            prv_pos = None
-            prv_labels = None
-            for prd, wids, sentence, tokens, pos, meta, fold, top in zip(pred_np, word_ids, data["sentence"], data["tokens"], data["pos"], data.get("meta", data["pos"]), data["fold"], tops_np):
-                if not dataset.label_for_all_subwords:
-                    labels = self.extract_labels(None, prd)
-                else:
-                    labels = self.extract_labels(wids, prd)
-                #logger.warning(labels)
-                if fold < 0:
-                    res = self.decoder.decode(tokens, pos, labels)
-                    res = self.apply_single_suw_rule(res, top)
-                    res["sentence"] = sentence
-                    res["features"] = meta
-                    res["meta"] = meta
-                    out = encoder.encode(**res)
-                    yield out
-                elif fold == 0:
-                    logger.warning(f"fold: 0 {''.join(tokens)}")
-                    prv_tokens = tokens
-                    prv_pos = pos
-                    prv_labels = labels
-                else: #fold == 1
-                    logger.warning(f"fold: 1 {''.join(tokens)}")
-                    prv_tokens.extend(tokens)
-                    prv_pos.extend(pos)
-                    prv_labels.extend(labels)
-                    logger.warning(f"unfolding {''.join(prv_tokens)}")
-                    res = self.decoder.decode(prv_tokens, prv_pos, prv_labels)
-                    res = self.apply_single_suw_rule(res, top)
-                    res["sentence"] = sentence
-                    res["meta"] = meta
-                    out = encoder.encode(**res)
-                    yield out
+                pred_np = pred.detach().cpu().numpy()
+                tops_np = tops.indices.detach().cpu().numpy()
+                prv_tokens = None
+                prv_pos = None
+                prv_labels = None
+                for prd, wids, sentence, tokens, pos, meta, fold, top in zip(pred_np, word_ids, data["sentence"], data["tokens"], data["pos"], data.get("meta", data["pos"]), data["fold"], tops_np):
+                    if not dataset.label_for_all_subwords:
+                        labels = self.extract_labels(None, prd)
+                    else:
+                        labels = self.extract_labels(wids, prd)
+                    #logger.warning(labels)
+                    if fold < 0:
+                        res = self.decoder.decode(tokens, pos, labels)
+                        res = self.apply_single_suw_rule(res, top)
+                        res["sentence"] = sentence
+                        res["features"] = meta
+                        res["meta"] = meta
+                        out = encoder.encode(**res)
+                        yield out
+                    elif fold == 0:
+                        logger.warning(f"fold: 0 {''.join(tokens)}")
+                        prv_tokens = tokens
+                        prv_pos = pos
+                        prv_labels = labels
+                    else: #fold == 1
+                        logger.warning(f"fold: 1 {''.join(tokens)}")
+                        prv_tokens.extend(tokens)
+                        prv_pos.extend(pos)
+                        prv_labels.extend(labels)
+                        logger.warning(f"unfolding {''.join(prv_tokens)}")
+                        res = self.decoder.decode(prv_tokens, prv_pos, prv_labels)
+                        res = self.apply_single_suw_rule(res, top)
+                        res["sentence"] = sentence
+                        res["meta"] = meta
+                        out = encoder.encode(**res)
+                        yield out
 
 
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoConfig, Seq2SeqTrainer, Seq2SeqTrainingArguments

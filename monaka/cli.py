@@ -521,7 +521,7 @@ def predict_bccwj(inputfile: Path, outfile: str, model_dirs: List[str], device: 
                     torch.cuda.empty_cache()
                     
                     if _batch < 2:
-                        break
+                        raise
                     else:
                         _batch = int(_batch/2)
 
