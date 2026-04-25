@@ -444,30 +444,30 @@ class MeCabEncoder(Encoder):
             out = dict()
             if start < 0 or '*' not in l: #長単位先頭
                 out["LUW"] = 'B'
-                out["l_orthToken"] = f[mapping['orthToken']]
-                out["l_reading"] = f[mapping['reading']]
+                out["l_orthToken"] = f[mapping.get('orthToken', '')]
+                out["l_reading"] = f[mapping.get('reading', '')]
                 out["l_pos"] = l
 
                 pos_ = l
                 # 用言のみ活用情報を追記
                 if self.is_yougen(pos_):
-                    out["l_cType"] = f[mapping['cType']]
-                    out["l_cForm"] = f[mapping['cForm']]
+                    out["l_cType"] = f[mapping.get('cType', '')]
+                    out["l_cForm"] = f[mapping.get('cForm', '')]
                 else:
                     out["l_cType"] = ""
                     out["l_cForm"] = ""
                 start = count
             else: #長単位途中
                 out["LUW"] = 'I'
-                lfeats[start]["l_orthToken"] += f[mapping['orthToken']]# 長単位先頭のトークンに追記
+                lfeats[start]["l_orthToken"] += f[mapping.get('orthToken', '')]# 長単位先頭のトークンに追記
                 out["l_orthToken"] = "*"
-                lfeats[start]["l_reading"] += f[mapping['reading']] # 長単位先頭のトークンに追記
+                lfeats[start]["l_reading"] += f[mapping.get('orthToken', '')] # 長単位先頭のトークンに追記
                 out["l_reading"] = "*"
                 out["l_pos"] = "*"
                 # 用言のみ活用情報を追記
                 if self.is_yougen(pos_):
-                    lfeats[start]["l_cType"] = f[mapping['cType']] # 長単位先頭のトークンを上書き
-                    lfeats[start]["l_cForm"] = f[mapping['cForm']] # 長単位先頭のトークンを上書き
+                    lfeats[start]["l_cType"] = f[mapping.get('cType', '')] # 長単位先頭のトークンを上書き
+                    lfeats[start]["l_cForm"] = f[mapping.get('cForm', '')] # 長単位先頭のトークンを上書き
                 out["l_cType"] = "*"
                 out["l_cForm"] = "*"
 
