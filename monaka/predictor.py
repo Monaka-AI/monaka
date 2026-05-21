@@ -442,10 +442,10 @@ class MeCabEncoder(Encoder):
         start = -1
         count = 0
         pos_ = None
-        for l, f in zip(lpos, features):
+        for l, f, t in zip(lpos, features, tokens):
             f = list(f)
             while len(f) < max_mapping:
-                f.append(f[0])
+                f.append(t)
             out = dict()
             if start < 0 or '*' not in l: #長単位先頭
                 out["LUW"] = 'B'
