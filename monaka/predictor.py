@@ -443,6 +443,7 @@ class MeCabEncoder(Encoder):
         count = 0
         pos_ = None
         for l, f in zip(lpos, features):
+            f = list(f)
             while len(f) < max_mapping:
                 f.append(f[0])
             out = dict()
