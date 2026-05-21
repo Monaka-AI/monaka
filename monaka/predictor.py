@@ -461,7 +461,7 @@ class MeCabEncoder(Encoder):
                 out["LUW"] = 'I'
                 lfeats[start]["l_orthToken"] += f[mapping.get('orthToken', '')]# 長単位先頭のトークンに追記
                 out["l_orthToken"] = "*"
-                lfeats[start]["l_reading"] += f[mapping.get('orthToken', '')] # 長単位先頭のトークンに追記
+                lfeats[start]["l_reading"] += f[mapping.get('l_reading', '')] # 長単位先頭のトークンに追記
                 out["l_reading"] = "*"
                 out["l_pos"] = "*"
                 # 用言のみ活用情報を追記
