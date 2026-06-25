@@ -1,0 +1,4 @@
+{
+    "exec": "cat",
+    "args1": "{input}"
+}
