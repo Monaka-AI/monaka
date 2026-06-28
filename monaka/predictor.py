@@ -1233,6 +1233,7 @@ class EnsemblePredictor:
     def predict_raw(self, input, encoder_name: str, batch_size: int = 8):
         encoder = Encoder.by_name(encoder_name)()
 
+        self.dataeset_options['store_all'] = True
         dataset = LUWJsonLDataset(input, **self.dataeset_options)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=LUWJsonLDataset.collate_function)
 
