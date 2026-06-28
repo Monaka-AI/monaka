@@ -95,7 +95,7 @@ class LUWChunkDecoder(Decoder):
                 chunk.append("I")
 
                 if l in ["unk", "pad"]:
-                    chunk.append("B")
+                    luw.append("*")
                 else:
                     luw.append(lpos)
 
