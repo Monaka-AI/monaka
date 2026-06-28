@@ -132,7 +132,10 @@ class LUWJsonLDataset(torch.utils.data.Dataset):
             return
 
         js["subwords"] = self.to_token_ids(js["tokens"], js["pos"] if self.pos_as_tokens else None)
-        if len(js["pos"]) > np.max(js["subwords"].word_ids()) + 1 and  len(js["subwords"]["input_ids"]) >= self.max_length and self.fold_sentence: # folding too long sentence
+        wids = js["subwords"].word_ids()
+        w_len = np.max(wids) if len(wids) > 0 else 0
+        
+        if len(js["pos"]) > w_len + 1 and  len(js["subwords"]["input_ids"]) >= self.max_length and self.fold_sentence: # folding too long sentence
             self.logger.warning(f"folding {len(js['pos'])} , {js['sentence']}")
 
             if prv_fold:

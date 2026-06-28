@@ -428,6 +428,7 @@ class MeCabEncoder(Encoder):
                     "cForm": 5,
                     "orthToken": 6
                 }
+                max_mapping = 9
             else: #UniDic
                 mapping = {
                     "reading": 9,
@@ -436,38 +437,42 @@ class MeCabEncoder(Encoder):
                     "cForm": 5,
                     "orthToken": 8
                 }
+                max_mapping = 10
         lfeats = list()
         start = -1
         count = 0
         pos_ = None
-        for l, f in zip(lpos, features):
+        for l, f, t in zip(lpos, features, tokens):
+            f = list(f)
+            while len(f) < max_mapping:
+                f.append(t)
             out = dict()
             if start < 0 or '*' not in l: #長単位先頭
                 out["LUW"] = 'B'
-                out["l_orthToken"] = f[mapping.get('orthToken', '')]
-                out["l_reading"] = f[mapping.get('reading', '')]
+                out["l_orthToken"] = f[mapping.get('orthToken', 0)]
+                out["l_reading"] = f[mapping.get('reading', 0)]
                 out["l_pos"] = l
 
                 pos_ = l
                 # 用言のみ活用情報を追記
                 if self.is_yougen(pos_):
-                    out["l_cType"] = f[mapping.get('cType', '')]
-                    out["l_cForm"] = f[mapping.get('cForm', '')]
+                    out["l_cType"] = f[mapping.get('cType', 0)]
+                    out["l_cForm"] = f[mapping.get('cForm', 0)]
                 else:
                     out["l_cType"] = ""
                     out["l_cForm"] = ""
                 start = count
             else: #長単位途中
                 out["LUW"] = 'I'
-                lfeats[start]["l_orthToken"] += f[mapping.get('orthToken', '')]# 長単位先頭のトークンに追記
+                lfeats[start]["l_orthToken"] += f[mapping.get('orthToken', 0)]# 長単位先頭のトークンに追記
                 out["l_orthToken"] = "*"
-                lfeats[start]["l_reading"] += f[mapping.get('orthToken', '')] # 長単位先頭のトークンに追記
+                lfeats[start]["l_reading"] += f[mapping.get('reading', 0)] # 長単位先頭のトークンに追記
                 out["l_reading"] = "*"
                 out["l_pos"] = "*"
                 # 用言のみ活用情報を追記
                 if self.is_yougen(pos_):
-                    lfeats[start]["l_cType"] = f[mapping.get('cType', '')] # 長単位先頭のトークンを上書き
-                    lfeats[start]["l_cForm"] = f[mapping.get('cForm', '')] # 長単位先頭のトークンを上書き
+                    lfeats[start]["l_cType"] = f[mapping.get('cType', 0)] # 長単位先頭のトークンを上書き
+                    lfeats[start]["l_cForm"] = f[mapping.get('cForm', 0)] # 長単位先頭のトークンを上書き
                 out["l_cType"] = "*"
                 out["l_cForm"] = "*"
 
