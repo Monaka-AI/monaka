@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 
+import copy
 import json
+from pathlib import Path
 from collections import namedtuple
 
 import numpy as np
@@ -52,7 +54,7 @@ class LUWJsonLDataset(torch.utils.data.Dataset):
     """
 
     def __init__(self, jsonlfiles: Union[str, List[str]], label_file: str, pos_file: str, lm_tokenizer: str, lm_tokenizer_config: Dict, max_length: int=1024, pos_as_tokens: bool=False, 
-                 label_for_all_subwords: bool=False, logger=logger, store_all: bool=False, 
+                 label_for_all_subwords: bool=False, logger=logger, store_all: bool=False, fold_sentence:bool=False,
                  **kwargs):
         self.sentences = list()
         self.tokenizer = Tokenizer.by_name(lm_tokenizer)(**lm_tokenizer_config)
@@ -63,6 +65,8 @@ class LUWJsonLDataset(torch.utils.data.Dataset):
         self.jsonlfiles = jsonlfiles
         self.logger = logger
         self.store_all = store_all
+        self.fold_sentence = fold_sentence
+        self.logger.warning(f"fold sentence {fold_sentence}")
 
         with open(label_file) as f:
             self.label_dic = json.load(f)
@@ -73,7 +77,7 @@ class LUWJsonLDataset(torch.utils.data.Dataset):
         else:
             self.pos_dic = None
         
-        if isinstance(jsonlfiles, str):
+        if isinstance(jsonlfiles, (str, Path)):
             self.logger.info(f"loading {jsonlfiles}")
             self.load(jsonlfiles)
         elif isinstance(jsonlfiles, list):
@@ -82,9 +86,10 @@ class LUWJsonLDataset(torch.utils.data.Dataset):
                     self.logger.info(f"loading {fname}")
                     self.load(fname)
                 elif isinstance(fname, dict):
+                    #self.logger.warning(fname)
                     self.load_dict(fname)
         
-        self.logger.info(f"total {len(self.sentences)} sentences loaded.")
+        self.logger.warning(f"total {len(self.sentences)} sentences loaded.")
         super().__init__()
 
     @staticmethod
@@ -96,7 +101,7 @@ class LUWJsonLDataset(torch.utils.data.Dataset):
         #        continue
         #    res[target] = [d[target] for d in data]
         for k in data[0].keys():
-            res[k] = [d[k] for d in data]
+            res[k] = [d.get(k) for d in data]
         return res
 
     def load(self, jsonlfile: str):
@@ -107,24 +112,85 @@ class LUWJsonLDataset(torch.utils.data.Dataset):
 
     def load_dict(self, js: dict):
         js['skip'] = False
+        prv_fold = False
+        if "fold" not in js:
+            js["fold"] = -1
+        else:
+            prv_fold = True
+
         if len(js["pos"]) != len(js["tokens"]):
-            self.logger.warn(f'skip loading {js["sentence"]} because of pos {len(js["pos"])} and token {len(js["tokens"])} length unmatch')
+            self.logger.warning(f'skip loading {js["sentence"]} because of pos {len(js["pos"])} and token {len(js["tokens"])} length unmatch')
             if self.store_all:
                 js['skip'] = True
                 self.sentences.append(js)
             return
         if len(js["pos"]) == 0:
-            self.logger.warn(f'skip loading {js["sentence"]} because there is no token.')
+            self.logger.warning(f'skip loading {js["sentence"]} because there is no token.')
             if self.store_all:
                 js['skip'] = True
                 self.sentences.append(js)
             return
 
         js["subwords"] = self.to_token_ids(js["tokens"], js["pos"] if self.pos_as_tokens else None)
+        wids = js["subwords"].word_ids()
+        w_len = np.max(wids) if len(wids) > 0 else 0
+        
+        if len(js["pos"]) > w_len + 1 and  len(js["subwords"]["input_ids"]) >= self.max_length and self.fold_sentence: # folding too long sentence
+            self.logger.warning(f"folding {len(js['pos'])} , {js['sentence']}")
+
+            if prv_fold:
+                logger.error("dual fold")
+                
+            indices = np.where(np.char.find(js["pos"], "補助記号-読点") > -1)[0]
+            if len(indices) == 0:
+                indices = np.where(np.char.find(js["pos"], "補助記号-一般") > -1)[0]
+            if len(indices) > 0:
+                i = indices[int(np.floor(len(indices) / 2))]
+                js1 = copy.deepcopy(js)
+                js1["tokens"] = js["tokens"][:i+1]
+                js1["pos"] = js["pos"][:i+1]
+                if "lemma" in js:
+                    js1["lemma"] = js["lemma"][:i+1]
+
+                js1["fold"] = 0
+                self.load_dict(js1)
+
+
+                js2 = copy.deepcopy(js)
+                js2["tokens"] = js["tokens"][i+1:]
+                js2["pos"] = js["pos"][i+1:]
+                if "lemma" in js:
+                    js2["lemma"] = js["lemma"][i+1:]
+
+                js2["fold"] = 1
+                self.load_dict(js2)
+                return
+
         js["input_ids"] = torch.LongTensor(js["subwords"]["input_ids"])
         js["label_ids"] = self.to_label_ids(js["labels"], js["subwords"].word_ids() if self.label_for_all_subwords else None) if "labels" in js else None
 
+        if 'input_ids' not in js:
+            return
 
+            #for l_subs, lid in zip(js["lemma_subwords"].word_ids(), js["lemma_id"]):
+            #    js["lemma_target"].extend([lid for _ in range(len(l_subs))])
+        
+            #print(len(js["lemma_target"] ), len(js["input_ids"] ))
+
+        if self.pos_dic:
+            js["pos_ids"] = self.to_pos_ids(js["pos"], js["subwords"].word_ids() if self.label_for_all_subwords else None) 
+
+
+        if len(js["subwords"].word_ids()) == 0:
+            self.logger.warning(f"no words: {js['tokens']}")
+            if self.store_all:
+                js['skip'] = True
+                self.sentences.append(js)
+            return
+
+        if len(js["pos"]) != np.max(js["subwords"].word_ids()) + 1:
+            self.logger.warning(f'unmatch length {len(js["pos"])} {np.max(js["subwords"].word_ids()) + 1}, {js["tokens"]} {js["subwords"]} {js["subwords"].word_ids()}')
+        
         if "lemma" in js:
             js["lemma_subwords"] = self.to_token_ids(js["lemma"])
             js["lemma_ids"] = []
@@ -134,32 +200,18 @@ class LUWJsonLDataset(torch.utils.data.Dataset):
             l_idx = js["lemma_subwords"].word_ids()
             if len(l_idx) == 0:
                 self.logger.warn(f"no lemma: {js['lemma']}")
-                if self.store_all:
-                    js['skip'] = True
-                    self.sentences.append(js)
+                self.sentences.append(js)
                 return
 
             for i in range(max(l_idx) + 1):
                 js["lemma_ids"].append(torch.LongTensor([sid for sid, wid in zip(sub_idx, l_idx) if wid == i]))
             
             js["lemma_target"] = [js["lemma_id"][i] for i in w_idx]
-            #for l_subs, lid in zip(js["lemma_subwords"].word_ids(), js["lemma_id"]):
-            #    js["lemma_target"].extend([lid for _ in range(len(l_subs))])
         
             #print(len(js["lemma_target"] ), len(js["input_ids"] ))
 
-        if self.pos_dic:
-            js["pos_ids"] = self.to_pos_ids(js["pos"], js["subwords"].word_ids() if self.label_for_all_subwords else None) 
-
-        if len(js["subwords"].word_ids()) == 0:
-            self.logger.warn(f"no words: {js['tokens']}")
-            if self.store_all:
-                js['skip'] = True
-                self.sentences.append(js)
-            return
-
         if len(js["pos"]) != np.max(js["subwords"].word_ids()) + 1:
-            self.logger.warn(f'unmatch length {len(js["pos"])} {np.max(js["subwords"].word_ids()) + 1}, {js["tokens"]} {js["subwords"]} {js["subwords"].word_ids()}')
+            self.logger.warning(f'unmatch length {len(js["pos"])} {np.max(js["subwords"].word_ids()) + 1}, {js["tokens"]} {js["subwords"]} {js["subwords"].word_ids()}')
         self.sentences.append(js)
 
     def to_label_ids(self, labels: List[str], word_ids: Optional[List[int]]=None):
@@ -271,7 +323,7 @@ class LemmaJsonDataset(torch.utils.data.Dataset):
 
     Attributes:
     """
-    def __init__(self, jsonfiles: Union[str, List[str]], transformer_name: str, max_length: int=512, fields: Optional[List[str]]=None, logger=logger,
+    def __init__(self, jsonfiles: Union[str, List[Union[str, Dict]]], transformer_name: str, max_length: int=512, fields: Optional[List[str]]=None, logger=logger,
                  **kwargs):
         
         self.lemma = list()
@@ -281,7 +333,10 @@ class LemmaJsonDataset(torch.utils.data.Dataset):
             self.load_data(jsonfiles, fields)
         else:
             for jsfile in jsonfiles:
-                self.load_data(jsfile, fields) 
+                if isinstance(jsfile, str):
+                    self.load_data(jsfile, fields)
+                else:
+                    self.load_dict(jsfile, fields)
 
     def __getitem__(self, idx):
         if np.random.random() < 0.1:
@@ -315,16 +370,20 @@ class LemmaJsonDataset(torch.utils.data.Dataset):
         with open(fname) as f:
             data: Dict = json.load(f)
 
+        self.load_dict(data, fields)
+
+    def load_dict(self, data: Dict, fields: Optional[List[str]]):
         for val in data.values():
             d = {
                 "input": self.to_label(val, fields),
-                "target": val["lemma"]
+                "target": val["lemma"] if 'lemma' in val else None
             }
-            d["subwords"] = self.tokenizer(d["input"], max_length=self.max_length, padding='max_length', truncation=True)
-            d["input_ids"] =torch.LongTensor(d["subwords"]["input_ids"])
-            d["attntion_mask"] = torch.tensor(d["subwords"]["attention_mask"])
-            d["target_subwords"] = self.tokenizer(d["target"], max_length=self.max_length, padding='max_length')
-            d["labels"] = d["target_subwords"]["input_ids"]
+            d["subwords"] = self.tokenizer(d["input"], max_length=self.max_length, padding='max_length', truncation=True, return_tensors="pt")
+            d["input_ids"] =torch.LongTensor(d["subwords"]["input_ids"][0])
+            d["attention_mask"] = torch.tensor(d["subwords"]["attention_mask"])
+            d["target_subwords"] = self.tokenizer(d["target"], max_length=self.max_length, padding='max_length') if d['target'] is not None else None
+            if d['target'] is not None:
+                d["labels"] = d["target_subwords"]["input_ids"]
             #d["decoder_input_ids"] = d["target_subwords"]["input_ids"]
             self.lemma.append(d)
         

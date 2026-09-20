@@ -21,9 +21,13 @@ from torch.nn.utils.rnn import pad_sequence
 from monaka.model import LUWParserModel, init_device, is_master
 from monaka.dataset import LUWJsonLDataset, LemmaJsonDataset
 from monaka.metric import MetricReporter, SpanBasedMetricReporter
+from monaka.mylogging import logger
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__)) # monaka dir
 RESC_DIR = os.path.join(BASE_DIR, "resource") # monaka/resource dir
+
+
+
 
 class Decoder(Registrable):
 
@@ -37,7 +41,7 @@ class Decoder(Registrable):
     def luw_pos(self, text: str, pos_level: int) -> str:
         pos: List = list()
         for token in text.split("_"):
-            pos.extend([t for t in token.split("-") if len(t) > 1])
+            pos.extend([t for t in token.split("-") if len(t) > 0])
         if pos_level is not None and pos_level > -1:
             return "-".join(pos[:pos_level])
         return "-".join(pos)
@@ -58,23 +62,57 @@ class Decoder(Registrable):
 @Decoder.register("LUW-Bunsetsu")
 class LUWChunkDecoder(Decoder):
 
+    @staticmethod
+    def is_space(luw_pos: str):
+        if luw_pos.startswith("補助記号"):
+            return True
+        elif luw_pos.startswith("空白"):
+            return True
+        return False
+    
+    @staticmethod
+    def is_passthrough(pos: str):
+        if '漢文' in pos:
+            return True
+        return False
+
     def decode(self, tokens: List[str], pos: List[str], labels: List[str], pos_level:int = -1, **kwargs) -> Dict:
         """
         labelsが以下の形式の場合に利用する
-        (B or I)(B or I)(LUW品詞)_(LUW活用型)_(LUW活用形)
+        (B or I)(B or I)(LUW品詞)
         """
         luw = list()
         chunk = list()
-        for l in labels:
+        begin_with_space = True
+        for l, p in zip(labels, pos):
+            if self.is_passthrough(p): #SUWをそのまま出力するシリーズ
+                chunk.append('B')
+                luw.append(p)
+                continue
+
+            lpos = self.luw_pos(l[2:], pos_level)
+            if begin_with_space:
+                chunk.append("I")
+
+                if l in ["unk", "pad"]:
+                    luw.append("*")
+                else:
+                    luw.append(lpos)
+
+                begin_with_space = self.is_space(lpos)
+                continue
+            
             if l in ["unk", "pad"]:
                 chunk.append("B")
                 luw.append("*")
             else:
                 chunk.append(l[0])
                 if l[1] == "B":
-                    luw.append(self.luw_pos(l[2:], pos_level))
+                    luw.append(lpos)
                 else:
                     luw.append("*")
+        if len(chunk) > 0: # 銭湯は必ずB
+            chunk[0] = 'B'
         res = {
             "tokens": tokens,
             "pos": pos,
@@ -245,6 +283,16 @@ class MeCabEncoder(Encoder):
         self.f_matcher = re.compile(r'\%f\[([\d\,]+)\]')
         self.fc_matcher = re.compile(r'\%F(.+)\[([\d\,]+)\]')
 
+    @staticmethod
+    def is_yougen(pos: str) -> bool:
+        if '動詞' in pos: #動詞 助動詞
+            return True
+        if '形容詞' in pos:
+            return True
+        if '形状詞' in pos:
+            return True
+        return False
+    
     def format(self, fstring: str, sentence: str, m_type, token: str, p, l, c, feat: List[str], start: int)-> str:
         """
         format like mecab
@@ -277,7 +325,13 @@ class MeCabEncoder(Encoder):
         %phl	左文脈 id
         %phr	右文脈 id
         %b  文節情報
-        %l  長単位情報
+        %l  長単位境界
+        %lP 長単位品詞
+        %lO 長単位OrthToken
+        %lR 長単位読み
+        %lT 長単位活用型
+        %lF 長単位活用形
+        %lL 長単位語彙素
         %f[N]	csv で表記された素性の N番目の要素
         %f[N1,N2,N3...]	N1,N2,N3番目の素性を, "," を デリミタとして表示
         %FC[N1,N2,N3...]	N1,N2,N3番目の素性を, C を デリミタとして表示.
@@ -333,7 +387,13 @@ class MeCabEncoder(Encoder):
         output = output.replace('%phl', '0')
         output = output.replace('%phr', '0')
         output = output.replace('%b', c)
-        output = output.replace('%l', l)
+        output = output.replace('%lP', l.get('l_pos',''))
+        output = output.replace('%lR', l.get('l_reading', ''))
+        output = output.replace('%lO', l.get('l_orthToken', ''))
+        output = output.replace('%lT', l.get('l_cType',''))
+        output = output.replace('%lF', l.get('l_cForm', ''))
+        output = output.replace('%lL', l.get('l_lemma', ''))
+        output = output.replace('%l', l.get('LUW', ''))
         output = output.replace('\s', ' ')
         
         for m in self.f_matcher.finditer(output):
@@ -358,9 +418,69 @@ class MeCabEncoder(Encoder):
         else:
             lpos = pos
 
-        output += self.format(self.bos_format, kwargs.get('sentence', ''), 0, '', '', '', '', [], 0)
+        output += self.format(self.bos_format, kwargs.get('sentence', ''), 0, '', '', {}, '', [], 0)
+        if len(features) > 0:
+            if len(features[0]) < 15: # ipadic:
+                mapping = {
+                    "reading": 7,
+                    "lemma": 6,
+                    "cType": 4,
+                    "cForm": 5,
+                    "orthToken": 6
+                }
+                max_mapping = 9
+            else: #UniDic
+                mapping = {
+                    "reading": 9,
+                    "lemma": 7,
+                    "cType": 4,
+                    "cForm": 5,
+                    "orthToken": 8
+                }
+                max_mapping = 10
+        lfeats = list()
+        start = -1
+        count = 0
+        pos_ = None
+        for l, f, t in zip(lpos, features, tokens):
+            f = list(f)
+            while len(f) < max_mapping:
+                f.append(t)
+            out = dict()
+            if start < 0 or '*' not in l: #長単位先頭
+                out["LUW"] = 'B'
+                out["l_orthToken"] = f[mapping.get('orthToken', 0)]
+                out["l_reading"] = f[mapping.get('reading', 0)]
+                out["l_pos"] = l
+
+                pos_ = l
+                # 用言のみ活用情報を追記
+                if self.is_yougen(pos_):
+                    out["l_cType"] = f[mapping.get('cType', 0)]
+                    out["l_cForm"] = f[mapping.get('cForm', 0)]
+                else:
+                    out["l_cType"] = ""
+                    out["l_cForm"] = ""
+                start = count
+            else: #長単位途中
+                out["LUW"] = 'I'
+                lfeats[start]["l_orthToken"] += f[mapping.get('orthToken', 0)]# 長単位先頭のトークンに追記
+                out["l_orthToken"] = "*"
+                lfeats[start]["l_reading"] += f[mapping.get('reading', 0)] # 長単位先頭のトークンに追記
+                out["l_reading"] = "*"
+                out["l_pos"] = "*"
+                # 用言のみ活用情報を追記
+                if self.is_yougen(pos_):
+                    lfeats[start]["l_cType"] = f[mapping.get('cType', 0)] # 長単位先頭のトークンを上書き
+                    lfeats[start]["l_cForm"] = f[mapping.get('cForm', 0)] # 長単位先頭のトークンを上書き
+                out["l_cType"] = "*"
+                out["l_cForm"] = "*"
+
+            lfeats.append(out)
+            count += 1
+
         start = 0
-        for i, (token, p, l, c, f) in enumerate(zip(tokens, pos, lpos, chunk, features)):
+        for i, (token, p, l, c, f) in enumerate(zip(tokens, pos, lfeats, chunk, features)):
             m_type = 0
             if i == 0:
                 m_type = 2
@@ -369,8 +489,27 @@ class MeCabEncoder(Encoder):
             output += self.format(self.node_format, kwargs.get('sentence', ''), m_type, token, p, l, c, f, start)
             start += len(token)
 
-        output += self.format(self.eos_format, kwargs.get('sentence', ''), 0, '', '', '', '', [], len(tokens))
+        output += self.format(self.eos_format, kwargs.get('sentence', ''), 0, '', '', {}, '', [], len(tokens))
         return output
+    
+    
+@Encoder.register("cabocha")
+class CaboChaEncoder(Encoder):
+
+    def encode(self, tokens: List[str], pos: List[str], chunk: List[str],  features: List[List[str]], **kwargs) -> Any:
+        chunk_count = 0
+        outputs = list()
+        for token, c, feat in zip(tokens, chunk, features):
+            if chunk_count < 1:
+                outputs.append("* 0 -1D")
+                chunk_count += 1
+            elif 'B' in c:
+                outputs.append(f"* {chunk_count} -1D")
+                chunk_count += 1
+            outputs.append(f"{token.strip()}\t{','.join(feat)}")
+        outputs.append('EOS')
+        return '\n'.join(outputs)
+    
 
 @Encoder.register("luw-split")
 class LUWSplitter(Encoder):
@@ -396,7 +535,239 @@ class LUWSplitter(Encoder):
             c_tokens.append(prv)
             
         return " ".join(c_tokens)
+
+@Encoder.register("bccwj")
+class BCCWJComainu(Encoder):
+    FIELDS = [
+        "file(S)",
+        "start(S)",
+        "end(S)",
+        "boundary(S)",
+        "orthToken(S)",
+        "reading(S)",
+        "lemma(S)",
+        "meaning(S)",
+        "pos(S)",
+        "cType(S)",
+        "cForm(S)",
+        "usage(S)",
+        "pronToken(S)",
+        "pronBase(S)",
+        "kana(S)",
+        "kanaBase(S)",
+        "form(S)",
+        "formBase(S)",
+        "formOrthBase(S)",
+        "formOrth(S)",
+        "orthBase(S)",
+        "wType(S)",
+        "charEncloserOpen(S)",
+        "charEncloserClose(S)",
+        "originalText(S)",
+        "order",
+        "BOB",
+        "LUW",
+        "l_orthToken",
+        "l_reading",
+        "l_lemma",
+        "l_pos",
+        "l_cType",
+        "l_cForm",
+        "depend",
+        "MID",
+        "m"
+    ]
+
+    @staticmethod
+    def is_yougen(pos: str) -> bool:
+        if '動詞' in pos: #動詞 助動詞
+            return True
+        if '形容詞' in pos:
+            return True
+        if '形状詞' in pos:
+            return True
+        return False
     
+    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], **kwargs) -> Any:
+        if "luw" in kwargs:
+            lpos = kwargs["luw"]
+        else:
+            lpos = pos
+
+        meta = kwargs.get("meta")
+        outs = list()
+        start = -1
+        count = 0
+        pos_ = None
+        for p, l, c, m in zip(pos, lpos, chunk, meta):
+            out = [m.get(name, "") for name in self.FIELDS]
+            out[self.FIELDS.index("BOB")] = c
+            if start < 0 or '*' not in l: #長単位先頭
+                out[self.FIELDS.index("LUW")] = 'B'
+                out[self.FIELDS.index("l_orthToken")] = m['orthToken(S)']
+                out[self.FIELDS.index("l_reading")] = m['reading(S)']
+                out[self.FIELDS.index("l_pos")] = l
+
+                pos_ = l
+                # 用言のみ活用情報を追記
+                if self.is_yougen(pos_):
+                    out[self.FIELDS.index("l_cType")] = m['cType(S)']
+                    out[self.FIELDS.index("l_cForm")] = m['cForm(S)']
+                else:
+                    out[self.FIELDS.index("l_cType")] = ""
+                    out[self.FIELDS.index("l_cForm")] = ""
+                start = count
+            else: #長単位途中
+                out[self.FIELDS.index("LUW")] = 'I'
+                outs[start][self.FIELDS.index("l_orthToken")] += m['orthToken(S)'] # 長単位先頭のトークンに追記
+                out[self.FIELDS.index("l_orthToken")] = "*"
+                outs[start][self.FIELDS.index("l_reading")] += m['reading(S)'] # 長単位先頭のトークンに追記
+                out[self.FIELDS.index("l_reading")] = "*"
+                out[self.FIELDS.index("l_pos")] = "*"
+                # 用言のみ活用情報を追記
+                if self.is_yougen(pos_):
+                    outs[start][self.FIELDS.index("l_cType")] = m['cType(S)'] # 長単位先頭のトークンを上書き
+                    outs[start][self.FIELDS.index("l_cForm")] = m['cForm(S)'] # 長単位先頭のトークンを上書き¥
+                out[self.FIELDS.index("l_cType")] = "*"
+                out[self.FIELDS.index("l_cForm")] = "*"
+
+            outs.append(out)
+            count += 1
+        return "\n".join(['\t'.join(o) for o in outs])
+
+
+@Encoder.register("bcpexport")
+class BCPExport(Encoder):
+    FIELDS = [
+        "corpusName(S)",
+        "file(S)",
+        "start(S)",
+        "end(S)",
+        "boundary(S)",
+        "orthToken(S)",
+        "pronToken(S)",
+        "reading(S)",
+        "lemma(S)",
+        "originalText(S)",
+        "pos(S)",
+        "sysCType(S)",
+        "cForm(S)",
+        "apply(S)",
+        "additionalInfo(S)",
+        "lid(S)",
+        "meaning(S)",
+        "UpdUser(S)",
+        "UpdDate(S)",
+        "order(S)",
+        "note(S)",
+        "open(S)",
+        "close(S)",
+        "wType(S)",
+        "fix(S)",
+        "variable(S)",
+        "formBase(S)",
+        "lemmaID(S)",
+        "usage(S)",
+        "sentenceId(S)",
+        "s_memo(S)",
+        "origChar(S)",
+        "pSampleID(S)",
+        "pStart(S)",
+        "orthBase(S)",
+        "file(L)",
+        "l_orthToken(L)",
+        "l_pos(L)",
+        "l_cType(L)",
+        "l_cForm(L)",
+        "l_reading(L)",
+        "l_lemma(L)",
+        "luw(L)",
+        "memo(L)",
+        "UpdUser(L)",
+        "UpdDate(L)",
+        "l_start(L)",
+        "l_end(L)",
+        "bunsetsu1(L)",
+        "bunsetsu2(L)",
+        "corpusName(L)",
+        "diffSuw(L)",
+        "l_lemmaNew(L)",
+        "l_readingNew(L)",
+        "l_orthBase(L)",
+        "l_formBase(L)",
+        "l_pronToken(L)",
+        "l_wType(L)",
+        "l_originalText(L)",
+        "complex(L)",
+        "l_meaning(L)",
+        "l_kanaToken(L)",
+        "l_formOrthBase(L)",
+        "l_origChar(L)",
+        "note(L)",
+        "pSampleID(L)",
+        "pStart(L)",
+        "rn"
+    ]
+
+    @staticmethod
+    def is_yougen(pos: str) -> bool:
+        if '動詞' in pos: #動詞 助動詞
+            return True
+        if '形容詞' in pos:
+            return True
+        if '形状詞' in pos:
+            return True
+        return False
+
+    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], **kwargs) -> Any:
+        if "luw" in kwargs:
+            lpos = kwargs["luw"]
+        else:
+            lpos = pos
+
+        meta = kwargs.get("meta")
+        outs = list()
+        start = -1
+        count = 0
+        pos_ = None
+        for p, l, c, m in zip(pos, lpos, chunk, meta):
+            out = [m.get(name, "") for name in self.FIELDS]
+            out[self.FIELDS.index("bunsetsu1(L)")] = c
+            if start < 0 or '*' not in l: #長単位先頭
+                out[self.FIELDS.index("luw(L)")] = 'B'
+                out[self.FIELDS.index("l_orthToken(L)")] = m['orthToken(S)']
+                out[self.FIELDS.index("l_reading(L)")] = m['reading(S)']
+                out[self.FIELDS.index("l_pos(L)")] = l
+                pos_ = l
+                # 用言のみ活用情報を追記
+                if self.is_yougen(pos_):
+                    out[self.FIELDS.index("l_cType(L)")] = m['sysCType(S)']
+                    out[self.FIELDS.index("l_cForm(L)")] = m['cForm(S)']
+                else:
+                    out[self.FIELDS.index("l_cType(L)")] = ""
+                    out[self.FIELDS.index("l_cForm(L)")] = ""
+
+                start = count
+            else: #長単位途中
+                out[self.FIELDS.index("luw(L)")] = 'I'
+                outs[start][self.FIELDS.index("l_orthToken(L)")] += m['orthToken(S)'] # 長単位先頭のトークンに追記
+                out[self.FIELDS.index("l_orthToken(L)")] = "*"
+                outs[start][self.FIELDS.index("l_reading(L)")] += m['reading(S)'] # 長単位先頭のトークンに追記
+                out[self.FIELDS.index("l_reading(L)")] = "*"
+                out[self.FIELDS.index("l_pos(L)")] = "*"
+                # 用言のみ活用情報を追記
+                if self.is_yougen(pos_):
+                    outs[start][self.FIELDS.index("l_cType(L)")] = m['sysCType(S)'] # 長単位先頭のトークンを上書き
+                    outs[start][self.FIELDS.index("l_cForm(L)")] = m['cForm(S)'] # 長単位先頭のトークンを上書き
+                out[self.FIELDS.index("l_cType(L)")] = "*"
+                out[self.FIELDS.index("l_cForm(L)")] = "*"
+
+            outs.append(out)
+            count += 1
+        return "\n".join(['\t'.join(o) for o in outs])
+
+    
+
 @Encoder.register("mrp")
 class MRPformatter(Encoder):
 
@@ -425,10 +796,11 @@ class SUWTokenizer(Registrable):
 class MecabSUWTokenizer(SUWTokenizer):
 
     def __init__(self, 
-        dic: Optional[str] = "gendai") -> None:
+        dic: Optional[str] = "gendai", dic_path: Optional[str]=None) -> None:
         super().__init__()
-
-        dicdir = os.path.join(RESC_DIR, dic)
+        if dic_path is None:
+            dic_path = RESC_DIR
+        dicdir = os.path.join(dic_path, dic)
         mecabrc = os.path.join(RESC_DIR, "mecabrc")
         mecab_option = f"-r {mecabrc} -d {dicdir}"
         if dic == 'ipadic':
@@ -560,6 +932,40 @@ class Predictor:
                 res["features"] = feat
                 yield encoder.encode(**res)
 
+    def predict_raw(self, input: str, encoder_name: str, batch_size: int = 8, device: str="cpu"):
+        #print(input, file=sys.stderr)
+        encoder = Encoder.by_name(encoder_name)()
+
+        dataset = LUWJsonLDataset(input, **self.dataeset_options)
+        dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=LUWJsonLDataset.collate_function)
+
+
+        init_device(device)
+        try:
+            device = int(device)
+        except:
+            pass
+        self.model.to(device)
+
+
+        for data in dataloader:
+            #word_ids = [sbw.word_ids() for sbw in data["subwords"]]
+            subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(device)
+            word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(device)
+            pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(device) if "pos_ids" in data else None
+
+            out = self.model(subwords, word_ids, pos_ids)
+            pred = torch.argmax(out, dim=-1) # batch, len, 
+
+            pred_np = pred.detach().cpu().numpy()
+            for prd, wids, sentence, tokens, pos in zip(pred_np, word_ids, data["sentence"], data["tokens"], data["pos"]):
+                if not dataset.label_for_all_subwords:
+                    labels = self.extract_labels(None, prd)
+                else:
+                    labels = self.extract_labels(wids, prd)
+                res = self.decoder.decode(tokens, pos, labels)
+                res["sentence"] = sentence
+                yield encoder.encode(**res)
 
     def evaluate(self, inputfile: str, batch_size: int = 8, device: str="cpu", targets: List[str]=("luw", "chunk"), pos_level: int = -1, format_: str="pretty", 
                 suw_tokenizer: str=None, suw_tokenizer_option: dict=None, outputfile: str=None):
@@ -635,31 +1041,343 @@ class Predictor:
         if outputfile is not None:
             output.close()
 
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoConfig
+
+class EnsemblePredictor:
+
+    def __init__(self, model_dirs: List[str], device: str="cpu", mask: Optional[str]=None) -> None:
+        self.model_dirs = model_dirs
+        
+        with open(os.path.join(model_dirs[0], "config.json")) as f:
+            self.config = json.load(f)
+
+        self.config["dataeset_options"]["label_file"] = os.path.join(model_dirs[0], "labels.json")
+
+        posfile = os.path.join(model_dirs[0], "pos.json")
+        if os.path.exists(posfile):
+            self.config["dataeset_options"]["pos_file"] = posfile
+
+        self.models = list()
+        for model_dir in model_dirs:
+            model = LUWParserModel.by_name(self.config["model_name"]).from_config(self.config["model_config"], **self.config["dataeset_options"])
+            model.load_state_dict(torch.load(self.find_best_pt(model_dir)), strict=False)
+            model.eval()
+            self.models.append(model)
+
+        self.decoder = Decoder.by_name(self.config["model_config"]["decoder"])()
+
+        self.dataeset_options = self.config['dataeset_options']
+        self.dataeset_options["fold_sentence"] = True
+
+        with open(self.dataeset_options["label_file"]) as f:
+            self.label_dic = json.load(f)
+
+        self.inv_label_dic = {v:k for k, v in self.label_dic.items()}
+
+        init_device(device)
+        try:
+            device = int(device)
+        except:
+            pass
+        for model in self.models:
+            model.to(device)
+        self.device = device
+
+        if mask is not None:
+            try:
+                with open(mask) as f:
+                    self.mask = json.load(f)
+                with open(posfile) as f:
+                    self.pos_dic = json.load(f)
+                    self.inv_pos = {v:k for k, v in self.pos_dic.items()}
+            except:
+                pass
+
+
+    @staticmethod
+    def find_best_pt(model_dir: str) -> str:
+        candidates = list()
+        longest = -1
+        idx = -1
+        for i, fname in enumerate(glob.glob(os.path.join(model_dir, "best_at_*.pt"))):
+            candidates.append(fname)
+            base = os.path.basename(fname)
+            epoch = base.split("_")[2]
+            epoch = int(epoch.split(".")[0])
+            if longest < epoch:
+                longest = epoch
+                idx = i
+
+        return candidates[idx]
+    
+    def extract_labels(self, word_ids, labels):
+        res = list()
+        if word_ids is None:
+            return [self.inv_label_dic.get(l, "unk") for l in labels]
+        prv = -1
+        for wid, l in zip(word_ids, labels):
+            if wid is not None and wid >= 0:
+                if wid == prv:
+                    continue
+                res.append(self.inv_label_dic.get(l, "unk"))
+                prv = wid
+        return res
+
+    def predict(self, input: List[str], suw_tokenizer: str, suw_tokenizer_option: dict, encoder_name: str, batch_size: int = 8, **kwargs):
+        encoder = Encoder.by_name(encoder_name)(**kwargs)
+        tokenizer = SUWTokenizer.by_name(suw_tokenizer)(**suw_tokenizer_option)
+
+        data = [tokenizer.tokenize(sent) for sent in input]
+
+        self.dataeset_options['store_all'] = True
+        dataset = LUWJsonLDataset(data, **self.dataeset_options)
+        dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=LUWJsonLDataset.collate_function)
+
+        with torch.no_grad():
+            for data in dataloader:
+                #word_ids = [sbw.word_ids() for sbw in data["subwords"]]
+                subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(self.device)
+                word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(self.device)
+                pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(self.device) if "pos_ids" in data else None
+
+                # average ensemble
+                out = 0.
+                for model in self.models:
+                    out = out + model(subwords, word_ids, pos_ids)
+
+                pred = torch.argmax(out, dim=-1) # batch, len, 
+                tops = torch.topk(out, len(self.label_dic), dim=-1)
+
+                pred_np = pred.detach().cpu().numpy()
+                tops_np = tops.indices.detach().cpu().numpy()
+                prv_tokens = None
+                prv_pos = None
+                prv_labels = None
+                for prd, wids, sentence, tokens, pos, meta, fold, top in zip(pred_np, word_ids, data["sentence"], data["tokens"], data["pos"], data.get("features", {}), data["fold"], tops_np):
+                    if not dataset.label_for_all_subwords:
+                        labels = self.extract_labels(None, prd)
+                    else:
+                        labels = self.extract_labels(wids, prd)
+                    if fold < 0:
+                        res = self.decoder.decode(tokens, pos, labels)
+                        res = self.apply_single_suw_rule(res, top)
+                        res["sentence"] = sentence
+                        res["features"] = meta
+                        res["meta"] = meta
+                        out = encoder.encode(**res)
+                        yield out
+                    elif fold == 0:
+                        logger.warning(f"fold: 0 {''.join(tokens)}")
+                        prv_tokens = tokens
+                        prv_pos = pos
+                        prv_labels = labels
+                    else: #fold == 1
+                        logger.warning(f"fold: 1 {''.join(tokens)}")
+                        prv_tokens.extend(tokens)
+                        prv_pos.extend(pos)
+                        prv_labels.extend(labels)
+                        logger.warning(f"unfolding {''.join(prv_tokens)}")
+                        res = self.decoder.decode(prv_tokens, prv_pos, prv_labels)
+                        res = self.apply_single_suw_rule(res, top)
+                        res["sentence"] = sentence
+                        res["features"] = meta
+                        res["meta"] = meta
+                        out = encoder.encode(**res)
+                        yield out
+
+    def apply_single_suw_rule(self, decoder_out, top):
+        singles = list(range(len(decoder_out["luw"])))
+        for i, l in enumerate(decoder_out["luw"]):
+            if '*' in l:
+                singles[i] = -1
+                if i > 0:
+                    singles[i-1] = -1
+
+        for s, pos, luw, t in zip(singles, decoder_out['pos'], decoder_out['luw'], top):
+            if s < 0:
+                continue
+            if '可能' not in pos:
+                if luw in pos: ## MeCabの品詞に活用型が含まれるので、長単位品詞がMeCabと一致していればそれを使う。
+                    decoder_out['luw'][s] = luw
+                else: # 品詞が異なる場合は、やむをえずMeCabを使う。(副作用ありなので、要相談)
+                    decoder_out['luw'][s] = pos
+
+            elif '名詞-普通名詞-助数詞可能' in pos:
+                decoder_out['luw'][s] = '名詞-普通名詞-一般'
+            elif '動詞-非自立可能' in pos:
+                decoder_out['luw'][s] = '動詞-一般'
+            elif '形容詞-非自立可能' in pos:
+                decoder_out['luw'][s] = '形容詞-一般'
+            elif '名詞-普通名詞-サ変可能' in pos:
+                decoder_out['luw'][s] = '名詞-普通名詞-一般'
+            elif '名詞-普通名詞-形状詞可能' in pos or '名詞-普通名詞-サ変形状詞可能' in pos:
+                for i in t:
+                    label = self.inv_label_dic[i]
+                    if '形状詞-一般' in label:
+                        decoder_out['luw'][s] = '形状詞-一般'
+                        break
+                    elif '名詞-普通名詞-一般' in label:
+                        decoder_out['luw'][s] = '名詞-普通名詞-一般'
+                        break
+            elif '名詞-普通名詞-副詞可能' in pos :
+                for i in t:
+                    label = self.inv_label_dic[i]
+                    if '副詞' in label:
+                        decoder_out['luw'][s] = '副詞'
+                        break
+                    elif '名詞-普通名詞-一般' in label:
+                        decoder_out['luw'][s] = '名詞-普通名詞-一般'
+                        break
+        return decoder_out
+        
+
+    def predict_raw(self, input, encoder_name: str, batch_size: int = 8):
+        encoder = Encoder.by_name(encoder_name)()
+
+        self.dataeset_options['store_all'] = True
+        dataset = LUWJsonLDataset(input, **self.dataeset_options)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=LUWJsonLDataset.collate_function)
+
+
+        with torch.no_grad():
+            for data in dataloader:
+                #word_ids = [sbw.word_ids() for sbw in data["subwords"]]
+                subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(self.device)
+                word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(self.device)
+                pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(self.device) if "pos_ids" in data else None
+
+                # average ensemble
+                out = 0.
+                for model in self.models:
+                    out = out + model(subwords, word_ids, pos_ids)
+
+                pred = torch.argmax(out, dim=-1) # batch, len, 
+                tops = torch.topk(out, len(self.label_dic), dim=-1)
+
+                pred_np = pred.detach().cpu().numpy()
+                tops_np = tops.indices.detach().cpu().numpy()
+                prv_tokens = None
+                prv_pos = None
+                prv_labels = None
+                for prd, wids, sentence, tokens, pos, meta, fold, top in zip(pred_np, word_ids, data["sentence"], data["tokens"], data["pos"], data.get("meta", data["pos"]), data["fold"], tops_np):
+                    if not dataset.label_for_all_subwords:
+                        labels = self.extract_labels(None, prd)
+                    else:
+                        labels = self.extract_labels(wids, prd)
+                    #logger.warning(labels)
+                    if fold < 0:
+                        res = self.decoder.decode(tokens, pos, labels)
+                        res = self.apply_single_suw_rule(res, top)
+                        res["sentence"] = sentence
+                        res["features"] = meta
+                        res["meta"] = meta
+                        out = encoder.encode(**res)
+                        yield out
+                    elif fold == 0:
+                        logger.warning(f"fold: 0 {''.join(tokens)}")
+                        prv_tokens = tokens
+                        prv_pos = pos
+                        prv_labels = labels
+                    else: #fold == 1
+                        logger.warning(f"fold: 1 {''.join(tokens)}")
+                        prv_tokens.extend(tokens)
+                        prv_pos.extend(pos)
+                        prv_labels.extend(labels)
+                        logger.warning(f"unfolding {''.join(prv_tokens)}")
+                        res = self.decoder.decode(prv_tokens, prv_pos, prv_labels)
+                        res = self.apply_single_suw_rule(res, top)
+                        res["sentence"] = sentence
+                        res["meta"] = meta
+                        out = encoder.encode(**res)
+                        yield out
+
+
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoConfig, Seq2SeqTrainer, Seq2SeqTrainingArguments
 from torch.utils.data import DataLoader
+
 class LemmaPredictor:
 
-    def __init__(self, model_dir: str) -> None:
+    def __init__(self, model_dir: str, device='cpu') -> None:
         self.model_dir = model_dir
+        self.device = device
         with open(os.path.join(model_dir, "config.json")) as f:
             self.config = json.load(f)
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(os.path.join(model_dir, "last-checkpoint"))
-        print(type(self.model))
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(os.path.join(model_dir, "last-checkpoint")).to(device)
+        #print(type(self.model))
         self.tokenizer = AutoTokenizer.from_pretrained(self.config['model_name'])
+        self.special_tokens = list(self.tokenizer.all_special_tokens)
+        self.special_tokens.extend([" ", "▁", "_"])
+        self.trainer = Seq2SeqTrainer(self.model, Seq2SeqTrainingArguments(".", per_device_eval_batch_size=8, predict_with_generate=True))
 
-    def predict(self, input: str) -> str:
-        print(input)
-        subwords = self.tokenizer([input], max_length=self.config['dataset_options']["max_length"], padding='max_length', truncation=True)
-        print(self.tokenizer.decode(subwords.input_ids[0]))
-        outputs = self.model.generate(torch.LongTensor(subwords.input_ids))
-        print(outputs)
-        print(self.tokenizer.decode(outputs[0], skip_special_tokens=False))
-        return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+    def predict(self, input: Dict, use_pos: bool=False) -> str:
+        dataset = LemmaJsonDataset(input, **self.config['dataset_options'])
+        #print(dataset[0])
+        #print(dataset[0]['input_ids'].size())
+        #preds = self.trainer.predict(test_dataset=dataset)
+        #preds_ = [np.argmax(prd, axis=-1) for prd in preds]
+        #decoded_preds = self.tokenizer.batch_decode(preds_[0], skip_special_tokens=True)
+        #return decoded_preds[0]
+
+        #print(input)
+        data = dataset[0]
+        #print(data['input_ids'].size())
+        inp = self.tokenizer.decode(data['input_ids'])
+        #print(inp)
+        if '<unk>' in inp:
+            return ''.join([v['lemma'] for v in data.get('suw', [{'lemma': ''}])])
+        
+        if use_pos:
+            pos:str = data.get('pos', '')
+            if pos.startswith(('接続詞', '感動詞', '副詞')):
+                # 特定の品詞の場合はSUWを直接使う
+                return ''.join([v['lemma'] for v in data.get('suw', [{'lemma': ''}])])
+            
+        outputs = self.model.generate(data['input_ids'].unsqueeze(0).to(self.device), 
+                                      attention_mask=data['attention_mask'].to(self.device),
+                                      do_sample=False)
+        #print(outputs)
+        #print(self.tokenizer.decode(outputs[0], skip_special_tokens=False))
+        tokens = self.tokenizer.convert_ids_to_tokens(outputs[0], skip_special_tokens=False)
+        output = []
+        for t in tokens:
+            if t not in self.special_tokens:
+                output.append(t)
+            else:
+                if len(output) == 0:
+                    continue
+                else:
+                    break
+        o ="".join(output)
+        #print(o.replace("▁", ""))
+        return o.replace("▁", "")
     
-    def batch_predict(self, inputs: List[str]) -> List[str]:
-        subwords = self.tokenizer(inputs, max_length=self.config['dataset_options']["max_length"], padding='max_length', truncation=True, return_tensors="pt")
-        outputs = self.model.generate(subwords)
-        return self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+    def tokens2output(self, tokens: List[str]) -> str:
+        output = []
+        for t in tokens:
+            if t not in self.special_tokens:
+                output.append(t)
+            else:
+                if len(output) == 0:
+                    continue
+                else:
+                    break
+        o ="".join(output)
+        #print(o.replace("▁", ""))
+        return o.replace("▁", "")
+    
+    def batch_predict(self, inputs: Dict) -> List[str]:
+        dataset = LemmaJsonDataset(input, **self.config['dataset_options'])
+        loader = DataLoader(dataset=dataset, batch_size=self.config['batch_size'], shuffle=False)
+        #print(data['input_ids'].size())
+        res = list()
+        for data in loader:
+            #print(self.tokenizer.decode(data['input_ids']))
+            outputs = self.model.generate(data['input_ids'].to(self.device), 
+                                        attention_mask=data['attention_mask'].to(self.device),
+                                        do_sample=False)
+            #print(outputs)
+            #print(self.tokenizer.decode(outputs[0], skip_special_tokens=False))
+            for output in outputs:
+                res.append(self.tokens2output(self.tokenizer.convert_ids_to_tokens(output, skip_special_tokens=False)))
     
     def evaluate(self, jsonfile: str) -> Dict:
         dataset = LemmaJsonDataset(jsonfile, **self.config['dataset_options'])
