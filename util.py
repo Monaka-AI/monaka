@@ -343,12 +343,17 @@ def to_sentences(data, luw:bool):
             "file(S)"]
     buf_n = list()
     buf_t = list()
+    prv_meta = None
     for d in data:
         n_ = d["orthToken(S)"]
-            
+        if prv_meta is None:
+            prv_meta = {k: d[k] for k in meta}
+
         if d["boundary(S)"] == "B" and len(buf_n) > 0:
             dd = {"sentence": "".join(buf_n),  "tokens": buf_t}
-            dd.update({k: d[k] for k in meta})
+            meta_ = {k: d[k] for k in meta}
+            dd.update(prv_meta)
+            prv_meta = meta_
             yield dd
             buf_n.clear()
             buf_t.clear()
@@ -485,7 +490,10 @@ def merge_jsonl(basefile: str, updatefile: str, suffix: str=''):
             for tb, tu in zip(jsb['tokens'], jsu['tokens']):
                 if keys is None:
                     keys = list(tb.keys())
-                udic = {f"{k}_{suffix}": v for k, v in tu.items() if k not in keys}
+                if len(suffix) > 0:
+                    udic = {f"{k}_{suffix}": v for k, v in tu.items() if k not in keys}
+                else:
+                    udic = {f"{k}": v for k, v in tu.items() if k not in keys}
                 tb.update(udic)
             print(json.dumps(jsb, ensure_ascii=False))
 
@@ -550,9 +558,17 @@ def jsonl2chj(jsonlfile: str, sep: str="\t"):
                 token.update(meta)
                 writer.writerow([token[k] for k in head])
 
-def comainu_js(js: dict, luw: str, luw_pos: str):
+def comainu_js(js: dict, bunsetsu: str, luw: str, luw_pos: str):
     files = js['file(S)']
     p = 0
+    if len(js['tokens']) > 0:
+        js['tokens'][0][bunsetsu] = 'B'
+        if not js['tokens'][0][luw].startswith('B'):
+            js['tokens'][0][luw] = 'B'
+            js['tokens'][0][luw_pos] = js['tokens'][0]['pos(S)']
+            js['tokens'][0]['l_cType'] = js['tokens'][0]['sysCType(S)']
+            js['tokens'][0]['l_cForm'] = js['tokens'][0]['cForm(S)']
+    
     for i, token in enumerate(js['tokens']):
         token['file(S)'] = files
         L = token[luw]
@@ -586,7 +602,7 @@ def jsonl2comainu(jsonfile: str, bunsetsu: str='bunsetsu1(L)_formOrth_all_period
     with open(jsonfile) as f:
         for line in f:
             js = json.loads(line)
-            js = comainu_js(js, luw, luw_pos)
+            js = comainu_js(js, bunsetsu, luw, luw_pos)
             for token in js['tokens']:
                 row = [token.get(h, "") for h in head]
                 L = token[luw]
@@ -694,6 +710,161 @@ def luw4lemma(jsonlfile: str):
                 } for i in range(L)]
 
             print(json.dumps(res, ensure_ascii=False))
+
+
+@app.command()
+def lemma_stats(jsonfiles: List[str]):
+    res = {"all": {'c':0, 'a': 0}}
+    for fname in jsonfiles:
+        with open(fname) as f:
+            js:dict = json.load(f)
+        for v in js.values():
+            pos = v['pos']
+            p_tokens = pos.split('-')
+            targets = ['all']
+            for i in range(len(p_tokens)):
+                targets.append('-'.join(p_tokens[0:i+1]))
+            
+            suw_lemma = ''.join([s['lemma'] for s in v['suw']])
+            lemma = v['lemma']
+            
+            for target in targets:
+                d = res.get(target, {'c': 0, 'a': 0})
+
+                d['a'] += 1
+                if suw_lemma == lemma:
+                    d['c'] += 1
+                res[target] = d
+
+    for d in res.values():
+        d['suw_acc'] = d['c'] / d['a']
+
+    print(json.dumps(res, indent=True, ensure_ascii=False))
+    
+def add_inv_dep(buf):
+    buf['inv_dep'] = [[] for _ in buf['ids']]
+    for ids, dep in zip(buf['ids'], buf['dep']):
+        buf['inv_dep'][dep].append(ids)
+
+def load_cabocha(fname: str):
+    with open(fname) as f:
+        buf = {"sentence": "", "dep": [], "tokens": [], "chunk": [], "ids": [], "tpos": [], "words": [], "lines": []}
+        c = -1
+        for line in f:
+            buf["lines"].append(line)
+            if line.startswith("#") or len(line.strip()) == 0:
+                continue
+            elif line.startswith("EOS"):
+                add_inv_dep(buf)
+                yield buf
+                buf = {"sentence": "", "dep": [], "tokens": [], "chunk": [], "ids": [], "tpos": [], "words": [], "lines": []}
+                c = -1
+                continue
+            elif line.startswith("*"):
+                tokens = line.strip().split(" ")
+                dep = int(tokens[2][:-1])
+                c = int(tokens[1])
+                #print(tokens)
+                buf["ids"].append(c)
+                buf["dep"].append(dep)
+                buf["words"].append("")
+                continue
+            else:
+                #print(c)
+                tokens = line.strip().split("\t")
+                buf["sentence"] += tokens[0]
+                buf["words"][-1] += tokens[0]
+                buf["tokens"].append(tokens)
+                buf["chunk"].append(c)
+                if len(buf["tpos"]) < len(buf["ids"]):
+                    buf["tpos"].append(tokens[1].split(',')[0])
+        if len(buf["sentence"]) > 0:
+            add_inv_dep(buf)
+            yield buf
+
+@app.command()
+def cabocha_eval(result: str, gold: str, distance: Optional[str]=None, skip:bool=False):
+    rgen = load_cabocha(result)
+    ggen = load_cabocha(gold)
+    a = 0
+    c = 0
+    if distance:
+        dist = dict()
+    for r, g in zip(rgen, ggen):
+        #print(r)
+        if skip:
+            if len(g["dep"]) != len(r["dep"]) or len(g["chunk"]) != len(r["chunk"]):
+                continue
+            for gw, rw in zip(g['words'], r['words']):
+                if gw != rw:
+                    continue
+        a += len(g["dep"])
+        for rd, gd, rc, gc in zip(r["dep"], g["dep"], r["chunk"], g["chunk"]):
+            if rd == gd:
+                c += 1
+            if distance:
+                if gd < 0:
+                    d = 0
+                else:
+                    d = gd - gc
+                dic = dist.get(d, {"a": 0, "c": 0})
+                dic["a"] += 1
+                if rd == gd:
+                    dic["c"] += 1
+                dist[d] = dic
+
+    print(f"sentence: {c/a*100} ({c}/{a})")
+    if distance:
+        for k, v in dist.items():
+            v["acc"] = v["c"] / v["a"]
+        with open(distance, 'w') as f:
+            json.dump(dist, f, ensure_ascii=False, indent=True)
+
+
+@app.command()
+def cabocha_stats(result: str, gold: str):
+    rgen = load_cabocha(result)
+    ggen = load_cabocha(gold)
+    res = dict()
+    for r, g in zip(rgen, ggen):
+        #print(r)
+        for rd, gd in zip(r["dep"], g["dep"]):
+            tpos = r["tpos"][gd]
+            d = res.get(tpos, {"a": 0, "c": 0})
+            d['a'] += 1
+            if rd == gd:
+                d['c'] += 1
+            res[tpos] = d
+    for k, v in res.items():
+        print(f"{k}\t{v['c']/v['a'] if v['a'] > 0 else 0.0}\t{v['c']}\t{v['a']}")
+
+
+@app.command()
+def search_cases(result: str, gold: str, distance: Optional[int]=None, pos: Optional[str]=None, max_lines: Optional[int]=30):
+    rgen = load_cabocha(result)
+    ggen = load_cabocha(gold)
+
+    for r, g in zip(rgen, ggen):
+        #print(r)
+        for rd, gd, gc in zip(r["dep"], g["dep"], g["ids"]):
+            tpos = r["tpos"][gd]
+            if rd == gd:
+                continue
+            if gd < 0:
+                d = 0
+            else:
+                d = gd - gc
+
+            if max_lines:
+                if len(g['lines']) > max_lines:
+                    continue
+
+            if distance:
+                if d == distance:
+                    print("".join(g['lines']))
+            if pos:
+                if pos in tpos:
+                    print("".join(g['lines']))
 
 
 if __name__ == "__main__":

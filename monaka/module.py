@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import math
 import torch
 import torch.nn as nn
 from typing import Dict
@@ -21,6 +22,17 @@ class LMEmbedding(nn.Module, Registrable):
     def from_config(cls, config: Dict):
         return cls(**config)
    
+
+@LMEmbedding.register("FixedEmb")
+class FixedEmbedding(LMEmbedding):
+
+    def __init__(self, n_out, n_vocab, padding_index, *args, **kwargs):
+        super().__init__(n_out, n_vocab, padding_index, *args, **kwargs)
+        self.emb = nn.Embedding(n_vocab, n_out, padding_index)
+
+    def forward(self, subwords):
+        return self.emb(subwords)
+
 
 @LMEmbedding.register("AutoLM")
 class AutoLMEmebedding(LMEmbedding):
@@ -200,6 +212,45 @@ class MLP(nn.Module):
         return x
 
 
+class Biaffine(nn.Module):
+
+    def __init__(self, n_in, n_out=1, bias_x=True, bias_y=True):
+        super(Biaffine, self).__init__()
+
+        self.n_in = n_in
+        self.n_out = n_out
+        self.bias_x = bias_x
+        self.bias_y = bias_y
+        self.weight = nn.Parameter(torch.Tensor(n_out,
+                                                n_in + bias_x,
+                                                n_in + bias_y))
+        self.reset_parameters()
+
+    def extra_repr(self):
+        s = f"n_in={self.n_in}, n_out={self.n_out}"
+        if self.bias_x:
+            s += f", bias_x={self.bias_x}"
+        if self.bias_y:
+            s += f", bias_y={self.bias_y}"
+
+        return s
+
+    def reset_parameters(self):
+        nn.init.zeros_(self.weight)
+
+    def forward(self, x, y):
+        if self.bias_x:
+            x = torch.cat((x, torch.ones_like(x[..., :1])), -1)
+        if self.bias_y:
+            y = torch.cat((y, torch.ones_like(y[..., :1])), -1)
+        # [batch_size, n_out, seq_len, seq_len]
+        s = torch.einsum('bxi,oij,byj->boxy', x, self.weight, y)
+        # remove dim 1 if n_out == 1
+        s = s.squeeze(1)
+
+        return s
+
+
 class ScalarMix(nn.Module):
     r"""
     Computes a parameterised scalar mixture of :math:`N` tensors, :math:`mixture = \gamma * \sum_{k}(s_k * tensor_k)`
@@ -246,3 +297,58 @@ class ScalarMix(nn.Module):
         weighted_sum = sum(w * h for w, h in zip(normed_weights, tensors))
 
         return self.gamma * weighted_sum
+
+
+class SelfAttentionPooling(nn.Module):
+    """
+    Implementation of SelfAttentionPooling 
+    Original Paper: Self-Attention Encoding and Pooling for Speaker Recognition
+    https://arxiv.org/pdf/2008.01077v1.pdf
+    """
+    def __init__(self, input_dim):
+        super(SelfAttentionPooling, self).__init__()
+        self.W = nn.Linear(input_dim, 1)
+        self.input_dim = input_dim
+        
+    def forward(self, batch_rep, dim=1, keepdim=True):
+        """
+        input:
+            batch_rep : size (N, T, H), N: batch size, T: sequence length, H: Hidden dimension
+        
+        attention_weight:
+            att_w : size (N, T, 1)
+        
+        return:
+            utter_rep: size (N, H)
+        """
+        softmax = nn.functional.softmax
+        att_w = softmax(self.W(batch_rep).squeeze(-1), dim=dim).unsqueeze(-1)
+        utter_rep = torch.sum(batch_rep * att_w, dim=1)
+
+
+        if keepdim:
+            utter_rep = utter_rep.unsqueeze(dim)
+
+        return utter_rep
+    
+
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Arguments:
+            x: Tensor, shape ``[seq_len, batch_size, embedding_dim]``
+        """
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)

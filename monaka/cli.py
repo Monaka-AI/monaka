@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import List, Optional, Union
 from rich.progress import Progress
 from prettytable import PrettyTable
-from monaka.predictor import Predictor, LemmaPredictor, EnsemblePredictor, RESC_DIR, Encoder, Decoder
+from monaka.predictor import Predictor, LemmaPredictor, DepPredictor, EnsemblePredictor, RESC_DIR, Encoder, Decoder
 from monaka.metric import SpanBasedMetricReporter
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
@@ -28,14 +28,14 @@ UNIDIC_URL = "https://clrd.ninjal.ac.jp/unidic_archive/"
 UNIDIC_URLS = {
     "gendai": UNIDIC_URL + "2302/unidic-cwj-202302.zip",
     "spoken": UNIDIC_URL + "2302/unidic-csj-202302.zip",
-    "novel": UNIDIC_URL + "2203/UniDic-202203_65_novel.zip",
-    "qkana": UNIDIC_URL + "2203/UniDic-202203_60b_qkana.zip",
-    "kindai": UNIDIC_URL + "2203/UniDic-202203_60a_kindai-bungo.zip",
-    "kinsei": UNIDIC_URL + "2203/UniDic-202203_50c_kinsei-edo.zip",
-    "kyogen": UNIDIC_URL + "2203/UniDic-202203_40_chusei-kougo.zip",
-    "wakan": UNIDIC_URL + "2203/UniDic-202203_30_chusei-bungo.zip",
-    "wabun": UNIDIC_URL + "2203/UniDic-202203_20_chuko.zip",
-    "manyo": UNIDIC_URL + "2203/UniDic-202203_10_jodai.zip",
+    "novel": UNIDIC_URL + "2308/unidic-novel-v202308.zip",
+    "qkana": UNIDIC_URL + "2308/unidic-qkana-v202308.zip",
+    "kindai": UNIDIC_URL + "2308/unidic-kindai-bungo-v202308.zip",
+    "kinsei": UNIDIC_URL + "2308/unidic-kinsei-edo-v202308.zip",
+    "kyogen": UNIDIC_URL + "2308/unidic-chusei-kougo-v202308.zip",
+    "wakan": UNIDIC_URL + "2308/unidic-chusei-bungo-v202308.zip",
+    "wabun": UNIDIC_URL + "2308/unidic-chuko-v202308.zip",
+    "manyo": UNIDIC_URL + "2308/unidic-jodai-v202308.zip",
     "unidic-spoken": UNIDIC_URL + "2302/unidic-csj-202302.zip",
     "65_novel": UNIDIC_URL + "2203/UniDic-202203_65_novel.zip",
     "60b_qkana": UNIDIC_URL + "2203/UniDic-202203_60b_qkana.zip",
@@ -253,7 +253,19 @@ def parse(model_dir: str, inputs: List[str], device: str="cpu", batch: int=8, ou
             inputs_ = [line.strip() for line in f]
     else:
         inputs_ = inputs
-    for r in predictor.predict(inputs_, suw_tokenizer=tokenizer, suw_tokenizer_option={"dic": dic}, device=device, batch_size=batch, encoder_name=output_format, node_format=node_format, unk_format=unk_format, eos_format=eos_format, bos_format=bos_format):
+    meta = list()
+    m = list()
+    inps = list()
+    for inp in inputs_:
+        if inp.startswith('#'):
+            m.append(inp)
+            continue
+        inps.append(inp)
+        meta.append(m)
+        m = list()
+    for m, r in zip(meta, predictor.predict(inps, suw_tokenizer=tokenizer, suw_tokenizer_option={"dic": dic}, device=device, batch_size=batch, encoder_name=output_format, node_format=node_format, unk_format=unk_format, eos_format=eos_format, bos_format=bos_format)):
+        if len(m) > 0:
+            print('\n'.join(m))
         print(r.rstrip())
 
 @app.command()
@@ -394,9 +406,21 @@ def evaluate_lemma(testfile: str, predfile: str, output_format: OutputFormat=Out
 
 
 @app.command()
+def predict_dep(model_dir: Path, input: Path, decoder_name:str='jsonl', encoder_name:str='jsonl', batch_size:int=8, device:str='cpu'):
+    predictor = DepPredictor(model_dir=model_dir)
+    with open(input) as f:
+        input_ = [line for line in f]
+    for i, res in enumerate(predictor.predict(input_, decoder_name, encoder_name, batch_size, device)):
+        if 'cabocha' in encoder_name:
+            print(f'#! DOC {i}')
+        print(res)
+
+
+@app.command()
 def evaluate(model_dir, inputfile: str, device: str="cpu", batch: int=8, targets: List[str]=("luw", "chunk"), pos_level:int = -1, format: str="pretty", outputfile: str=None):
     predictor = Predictor(model_dir=model_dir)
-    predictor.evaluate(inputfile, batch_size=batch, device=device, targets=targets, pos_level=pos_level, format_=format, outputfile=outputfile)
+    res = predictor.evaluate(inputfile, batch_size=batch, device=device, targets=targets, pos_level=pos_level, format_=format, outputfile=outputfile)
+    print(res)
 
 
 @app.command()

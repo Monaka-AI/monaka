@@ -18,8 +18,11 @@ from registrable import Registrable
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
+from conllu.models import TokenList, Token
+from ufal.chu_liu_edmonds import chu_liu_edmonds
+
 from monaka.model import LUWParserModel, init_device, is_master
-from monaka.dataset import LUWJsonLDataset, LemmaJsonDataset
+from monaka.dataset import LUWJsonLDataset, LemmaJsonDataset, ChunkDepJsonLDataset
 from monaka.metric import MetricReporter, SpanBasedMetricReporter
 from monaka.mylogging import logger
 
@@ -57,6 +60,36 @@ class Decoder(Registrable):
         }
         """
         raise NotImplementedError
+
+
+class DepDecoder(Registrable):
+
+    def __init__(self) -> None:
+        super().__init__()
+
+
+    def __call__(self, *args: Any, **kwds: Any) -> Any:
+        return self.decode(*args, **kwds)
+
+    
+    def decode(self, sent: str, **kwargs) -> Dict:
+        """
+        出力は辞書形式 LUWは開始位置の場合はPOS-tag名、そうでない場合は"*"。文節は開始位置は"B"そうでなければ"I"。
+        解析対象のfieldを含んでいれば良い。
+        kwargsにメタ情報を追記でき、それらを辞書に加えることを想定している
+        {
+            "luw": ["POS-tag or *"]
+            "chunk": ["B", "I"]
+        }
+        """
+        raise NotImplementedError
+
+
+@DepDecoder.register("jsonl")
+class DepJsonL(DepDecoder):
+
+    def decode(self, sent, **kwargs):
+        return json.loads(sent)
 
 
 @Decoder.register("LUW-Bunsetsu")
@@ -176,6 +209,119 @@ class Encoder(Registrable):
         raise NotImplementedError
     
 
+class DepEncoder(Registrable):
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__()
+
+    def __call__(self, *args: Any, **kwds: Any) -> Any:
+        return self.encode(*args, **kwds)
+
+    def encode(self, original: Dict, **kwargs) -> Any:
+        """
+        Decoderが出力する形式を受け取って、所望の出力形式に変換する
+        """
+        raise NotImplementedError
+
+
+@DepEncoder.register("jsonl")
+class DepPathThrough(DepEncoder):
+
+    def encode(self, original, **kwargs):
+        return json.dumps(original, ensure_ascii=False)
+    
+
+@DepEncoder.register("ud")
+class UDDepEncoder(DepEncoder):
+
+    def encode(self, original, **kwargs):
+        if 'lemma' not in original or original['lemma'][0] == '_':
+            original['lemma'] = original['tokens']
+
+        if 'upos' not in original or original['upos'][0] == '_':
+            original['upos'] = original['pos']
+
+        if 'misc' not in original or original['misc'][0] == '_':
+            prv = -1
+            feats = list()
+            for b in original['bid']:
+                if prv != b:
+                    feats.append({'BunsetuBILabel': 'B', 'SpaceAfter': 'No'})
+                    prv = b
+                else:
+                    feats.append({'BunsetuBILabel': 'I', 'SpaceAfter': 'No'})
+            original['misc'] = feats
+
+        token_list = [{"id": i+1, "form": t, "lemma": l, "upos": u, "xpos":p, "feats": "_", "head": 0, "deprel": r, "deps": "_", "misc": {}} 
+            for i,(t,p,r,l,u) in enumerate(zip(original['tokens'], original['pos'], original['rel'], original['lemma'], original['upos']))]
+
+        for t, f in zip(token_list, original['misc']):
+            t['misc'] = f
+
+        bid = np.array(original['bid'])
+        rel = np.array(original['rel'])
+        indices = np.arange(len(bid))
+        hids = list()
+        for i in range(np.max(bid)+1):
+            ind = np.where(bid == i)
+            hid = indices[ind][np.where(rel[ind] == 'shead')][0]
+            hids.append(hid)
+            for j in ind[0]:
+                if j == hid:
+                    continue
+                token_list[j]['head'] = hid + 1
+        
+        for dep in original['dependency']:
+            id_ = dep['id']
+            i = hids[id_]
+            h = dep['head']
+            if  id_ == h or dep['rel'] == 'root':
+                token_list[i]['head'] = 0
+                token_list[i]['deprel'] = 'root'
+            elif h < len(hids):
+                #print(i, h)
+                #print(len(token_list), len(hids))
+                token_list[i]['head'] = hids[h] + 1
+                token_list[i]['deprel'] = dep['rel'] if dep['rel'] != 'unk' else 'nmod'
+            else:
+                token_list[i]['head'] = hids[-1] + 1
+                token_list[i]['deprel'] = dep['rel']if dep['rel'] != 'unk' else 'nmod'
+    
+        for t in token_list[1:]:
+            if t['deprel'] == 'fixed':
+                t['head'] = t['id'] -1
+            if t['deprel'] == 'unk':
+                t['deprel'] = 'nmod'
+
+        tlist = TokenList([Token(**t) for t in token_list])
+        tlist.metadata['sent_id'] = original['sent_id']
+        tlist.metadata['text'] = original['text']
+
+        return tlist.serialize()[:-1]
+
+
+@DepEncoder.register("cabocha")
+class CabochaDepEncoder(DepEncoder):
+
+    def encode(self, original, **kwargs):
+        
+        pbid = -1
+        out = list()
+        out.append(f'#! DOCATTR	<sent_id># sent_id = {original["sent_id"]}</sent_id>')
+        deps = original['dependency']
+        for bid, token, feat in zip(original['bid'], original['tokens'], original['unidic']):
+            if bid != pbid:
+                pbid = bid
+                head = deps[bid]['head']
+                if head == bid or head >= len(deps):
+                    head = -1
+                out.append(f'* {bid} {head}D')
+            feat = [f.replace(',', '，') for f in feat]
+            out.append(f"{token.strip()}\t{','.join(feat)}")
+        out.append('EOS')
+        return '\n'.join(out)
+            
+
 def append_spans(data):
     start = 0
     data["suw_span"] = []
@@ -221,7 +367,8 @@ def append_spans(data):
     data["luw_triples"].append((luw_start, luw_end, luw_type))
 
     return data
-    
+
+
 @Encoder.register("jsonl")
 class PassThrough(Encoder):
 
@@ -497,16 +644,65 @@ class MeCabEncoder(Encoder):
 class CaboChaEncoder(Encoder):
 
     def encode(self, tokens: List[str], pos: List[str], chunk: List[str],  features: List[List[str]], **kwargs) -> Any:
+
+        if "luw" in kwargs:
+            lpos = kwargs["luw"]
+        else:
+            lpos = pos
+
         chunk_count = 0
         outputs = list()
-        for token, c, feat in zip(tokens, chunk, features):
+
+        luws = list()
+        luw_read = list()
+        luw = ""
+        luw_r = ""
+        for token, p, feat in zip(tokens, lpos, features):
+            if p == '*':
+                luw += token
+                luw_r += feat[9] if len(feat) > 10 else ''
+            else:
+                if len(luw) > 0:
+                    luws.append(luw)
+                    luw_read.append(luw_r)
+                luw = token
+                luw_r = feat[9] if len(feat) > 10 else ''
+        if len(luw) > 0:
+            luws.append(luw)
+            luw_read.append(luw_r)
+
+        luw_c = 0
+        for token, c, p, feat in zip(tokens, chunk, lpos, features):
             if chunk_count < 1:
                 outputs.append("* 0 -1D")
                 chunk_count += 1
+                c = 'B'
             elif 'B' in c:
                 outputs.append(f"* {chunk_count} -1D")
                 chunk_count += 1
-            outputs.append(f"{token.strip()}\t{','.join(feat)}")
+            pos_tokens = ['*' for _ in range(4)]
+            pos_tokens.extend(['' for _ in range(4)])
+            if p == '*':
+                if c == 'B':
+                    luw = token
+                    for i, f in enumerate(feat[:4]):
+                        pos_tokens[i] = f
+                else:
+                    luw = ""
+                    pos_tokens = pos_tokens[1:]
+            else:
+                luw = luws[luw_c]
+                luw_c += 1
+                for i, t in enumerate(p.split('-')):
+                    pos_tokens[i] = t
+            c = '' if 'I' in c else 'B'
+
+            feat = [f.replace(',', '，') for f in feat]
+            if len(feat) < 29:
+                L = 29 -len(feat)
+                feat.extend(['' for _ in range(L)])
+
+            outputs.append(f"{token.strip()}\t{','.join(feat)}\t{luw}\t{','.join(pos_tokens)}\t{c}")
         outputs.append('EOS')
         return '\n'.join(outputs)
     
@@ -1400,3 +1596,151 @@ class LemmaPredictor:
             "diff": diff
         }
 
+
+class DepPredictor:
+
+    def __init__(self, model_dir: str) -> None:
+
+        self.model_dir = model_dir
+        
+        with open(os.path.join(model_dir, "config.json")) as f:
+            self.config = json.load(f)
+
+        self.config["dataeset_options"]["label_file"] = os.path.join(model_dir, "labels.json")
+        self.config["dataeset_options"]["rel_file"] = os.path.join(model_dir, "rels.json")
+        self.config["dataeset_options"]["wlsp_file"] = os.path.join(model_dir, "wlsp_dic.json")
+
+        posfile = os.path.join(model_dir, "pos.json")
+        if os.path.exists(posfile):
+            self.config["dataeset_options"]["pos_file"] = posfile
+
+        self.model = LUWParserModel.by_name(self.config["model_name"]).from_config(self.config["model_config"], **self.config["dataeset_options"])
+        self.model.load_state_dict(torch.load(os.path.join(model_dir, "best.pt")), strict=False)
+        self.model.eval()
+
+        #self.decoder = Decoder.by_name(self.config["model_config"]["decoder"])()
+
+        self.dataeset_options = self.config['dataeset_options']
+
+        with open(self.dataeset_options["label_file"]) as f:
+            self.label_dic = json.load(f)
+
+        self.inv_label_dic = {v:k for k, v in self.label_dic.items()}
+
+        with open(self.dataeset_options["rel_file"]) as f:
+            self.rel_dic = json.load(f)
+    
+        self.inv_rel_dic = {v:k for k, v in self.rel_dic.items()}
+
+    def predict(self, input: List[str], dep_decoder_name: str, encoder_name: str, batch_size: int = 8, device: str="cpu", left2right: bool=False, **kwargs):
+        encoder = DepEncoder.by_name(encoder_name)(**kwargs)
+        decoder = DepDecoder.by_name(dep_decoder_name)(**kwargs)
+
+        data = [decoder(sent) for sent in input]
+
+        self.dataeset_options['store_all'] = True
+        dataset = ChunkDepJsonLDataset(data, **self.dataeset_options)
+        dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=ChunkDepJsonLDataset.collate_function)
+
+
+        init_device(device)
+        try:
+            device = int(device)
+        except:
+            pass
+        self.model.to(device)
+
+        self.model.eval()
+
+        #print(self.inv_label_dic)
+        for data in dataloader:
+                subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(device) if 'input_ids' in data else None
+                if 'input_ids' in data:
+                    word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(device)
+                else:
+                    word_ids = pad_sequence([torch.LongTensor([i for i in range(len(tokens))]) for tokens in data['tokens']]  , batch_first=True, padding_value=-1).to(device)
+                #word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(device)
+                chunk_ids = pad_sequence(data["chunk_ids"], batch_first=True, padding_value=-1).to(device)
+                #dep_ids = pad_sequence(data["dep_ids"], batch_first=True, padding_value=-1).to(device)
+                #word_rel_ids = pad_sequence(data["word_rel_ids"], batch_first=True, padding_value=1).to(device)
+                #dep_rel_ids = pad_sequence(data["dep_rel_ids"], batch_first=True, padding_value=1).to(device)
+                pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(device) if "pos_ids" in data else None
+                wlsp_ids = pad_sequence(data["wlsp_ids"], batch_first=True, padding_value=1).to(device) if "wlsp_ids" in data else None
+                #wmask = word_rel_ids.ne(1)
+                #dmask = dep_ids.ne(-1)
+                #rmask = dep_rel_ids.ne(1)
+
+                dep_out, deprel_out, word_out  = self.model(subwords, word_ids, chunk_ids, pos_ids, wlsp_ids)
+                #deprel_out = deprel_out.permute((0,2,3,1)) # [batch, chunk_class, chunk_len, chunk_len] -> [batch, chunk_len, chunk_len, chunk_class]
+                #dep_pred = torch.argmax(dep_out, dim=-1)
+                softmax = torch.nn.functional.softmax
+                deprel_out[:, self.rel_dic['root'], :, :] = -1000.
+                rel_pred = torch.argmax(deprel_out, dim=1) #[batch, chunk_len, chunk_len]
+                shead_ids = [i for k, i in self.label_dic.items() if 'shead' in k]
+                wrd_shead_np = softmax(word_out[:, :, shead_ids], dim=-1).detach().cpu().numpy()
+                word_out2 = word_out.detach()
+                word_out2[:, :, shead_ids] = -1000.
+                wrd_pred = torch.argmax(word_out2, dim=-1)
+
+                dep_pred_np = softmax(dep_out, dim=-1).detach().cpu().numpy()
+                rel_pred_np = rel_pred.detach().cpu().numpy()
+                wrd_pred_np = wrd_pred.detach().cpu().numpy()
+                nulls = ['_' for _ in data['tokens']]
+
+                for depp, relp, wrdp, shp, bnst, pos, tokens, bid, sentid, text, upos, misc, lemma, undc in zip(dep_pred_np, rel_pred_np, wrd_pred_np, wrd_shead_np, 
+                        data['bunsetsu'], data['pos'], data['tokens'], data['bid'], data['sent_id'], data['text'], 
+                        data.get('upos', nulls), data.get('misc', nulls), data.get('lemma', nulls), data.get('unidic', nulls)):
+                    res = {
+                        "sent_id": sentid,
+                        "text": text,
+                        "tokens": tokens,
+                        "bid": bid,
+                        "bunsetsu": bnst,
+                        "pos": pos,
+                        "upos": upos,
+                        "misc": misc,
+                        "lemma": lemma,
+                        "unidic": undc
+                    }
+                    roots = np.array([depp[i,i] for i in range(len(bnst))])
+                    ndepp = np.hstack((roots.reshape(len(bnst), 1), depp[:len(bnst), :len(bnst)]))
+                    ndepp = np.vstack((np.hstack(([0], roots)).reshape(1, len(bnst)+1), ndepp))
+                    #for i in range(ndepp.shape[0]):
+                    #    ndepp[i, i] = -1000.
+                    heads, _ = chu_liu_edmonds(ndepp)
+                    #print(heads, len(heads), len(bnst))
+                    #print(heads.index(0))
+                    root = heads.index(0) -1
+                    if left2right:
+                        x = list()
+                        y = list()
+                        for i in range(len(bnst)):
+                            for j in range(0, root):
+                                x.append(j)
+                                y.append(i)
+                            for j in range(root+1, len(bnst)):
+                                x.append(i)
+                                y.append(j)
+                        ndepp[(x, y)] = -1000.
+                        heads, _ = chu_liu_edmonds(ndepp)
+                    #roots = np.array([depp[i,i] if np.argmax(depp[i, :len(bnst)]) == i else -1000. for i in range(len(bnst))])
+                    #root = np.argmax(roots)
+                    #for i in range(depp.shape[0]):
+                    #    depp[i, i] = -1000.
+                    #dep = np.argmax(depp, axis=-1)
+                    res['rel'] = [self.inv_label_dic.get(v, 'nmod') for v,_ in zip(wrdp, tokens)]
+                    res['dependency'] = [{"id": i, "head": int(u) -1 if u > 0 else root, "rel": self.inv_rel_dic.get(v[u-1], 'nmod')} for i, (u,v,_) in enumerate(zip(heads[1:], relp, bnst))]
+                    for d in res['dependency']:
+                        if d['id'] == d['head']:
+                            d['head'] = root
+                    #res['dependency'][root]['head'] = res['dependency'][root]['id']
+                    res['dependency'][root]['rel'] = "root"
+                    bid = np.array(bid)
+                    indices = np.arange(len(bid))
+                    #for i in range(np.max(bid)+1):
+                    #    ind = np.where(bid == i)
+                        #print(ind)
+                    #    j = np.argmax(shp[ind])
+                    #    k = indices[ind][j]
+                    #    res['rel'][k] = 'shead'
+                    yield encoder(res)
