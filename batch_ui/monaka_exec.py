@@ -80,3 +80,18 @@ class MonakaExec:
                 else:
                     res[id_]["status"] = "finished"
         return res
+
+    def delete(self, id_: str):
+        if id_ in self.threads:
+            th = self.threads[id_]
+            if th.is_alive():
+                th.stop()
+                th.join()
+            del self.threads[id_]
+        
+        out_dir = os.path.join(RESL_DIR, id_)
+        if os.path.exists(out_dir):
+            os.removedirs(out_dir)
+        target = os.path.join(ZIPF_DIR, f"{id_}.zip")
+        if os.path.exists(target):
+            os.remove(target)

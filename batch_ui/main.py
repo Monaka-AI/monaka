@@ -31,7 +31,7 @@ show_status = st.button("表示")
 if show_status:
     status = mexec.status()
 
-    r1, r2, r3, r4, r5, r6 = st.columns(6)
+    r1, r2, r3, r4, r5, r6, r7 = st.columns(7)
     with r1:
         st.write("id")
     with r2:
@@ -44,9 +44,12 @@ if show_status:
         st.write("対象ファイル")
     with r6:
         st.write("結果取得")
+    with r7:
+        st.write("結果削除")
 
+    c = 0
     for id_, d in status.items():
-        r1, r2, r3, r4, r5, r6 = st.columns(6)
+        r1, r2, r3, r4, r5, r6, r7 = st.columns(7)
         with r1:
             st.write(id_)
         with r2:
@@ -74,3 +77,20 @@ if show_status:
                 download = st.download_button("download", data, f"{id_}.zip", "application/zip", key=f"b_{id_}", disabled=not out_exists)
             else:
                 download = st.button("download", disabled=True, key=f"b_{id_}")
+        with r7:
+            if d['status'] in ["finished", "closed"]:
+                st.session_state[f"d_{c}"] = {"val": st.button("delete", disabled=False, key=f"d_{id_}"), "id": id_}
+                c += 1
+            else:
+                delete = st.button("delete", disabled=True, key=f"d_{c}")
+                c += 1
+
+for k, v in st.session_state.items():
+    if k.startswith("d_"):
+        if not isinstance(v, dict):
+            continue
+        if "id" not in v:
+            continue
+        id_ = v["id"]
+        #if v["val"]:
+        print(f"delete {v}")
