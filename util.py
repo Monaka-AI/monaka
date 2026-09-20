@@ -6,7 +6,7 @@ import json
 import enum
 import numpy as np
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Iterable
 from conllu import parse_incr
 
 
@@ -102,6 +102,81 @@ def load_conllu(fname: str):
                 js['luw(L)'] = token['misc']['LUWBILabel']
                 js['l_pos(L)'] = token['misc']['LUWPOS']
                 yield js
+
+
+def load_hachidai_suw(fname: str) -> Iterable:
+    head = [
+    "corpusName(S)"
+      ,"file(S)"
+      ,"start(S)"
+      ,"end(S)"
+      ,"boundary(S)"
+      ,"orthToken(S)"
+      ,"pronToken(S)"
+      ,"reading(S)"
+      ,"lemma(S)"
+      ,"originalText(S)"
+      ,"pos(S)"
+      ,"sysCType(S)"
+      ,"cForm(S)"
+      ,"lid(S)"
+      ,"meaning(S)"
+      ,"order(S)"
+      ,"open(S)"
+      ,"close(S)"
+      ,"wType(S)"
+      ,"formBase(S)"
+      ,"lemmaID(S)"
+      ,"usage(S)"
+      ,"sentenceId(S)"
+      ,"origChar(S)"
+    ]
+    out = dict()
+    with open(fname) as f:
+        reader = csv.reader(f, delimiter="\t")
+        for row in reader:
+            yield dict(zip(head, row))
+
+
+
+def load_hachidai_luw(fname: str) -> Dict:
+    head = [
+    "file(L)"
+      ,"l_orthToken(L)"
+      ,"l_pos(L)"
+      ,"l_cType(L)"
+      ,"l_cForm(L)"
+      ,"l_reading(L)"
+      ,"l_lemma(L)"
+      ,"luw(L)"
+      ,"l_start(L)"
+      ,"l_end(L)"
+      ,"bunsetsu1(L)"
+      ,"bunsetsu2(L)"
+      ,"corpusName(L)"
+      ,"diffSuw(L)"
+      ,"l_lemmaNew(L)"
+      ,"l_readingNew(L)"
+      ,"l_orthBase(L)"
+      ,"l_formBase(L)"
+      ,"l_pronToken(L)"
+      ,"l_wType(L)"
+      ,"l_originalText(L)"
+      ,"complex(L)"
+      ,"l_meaning(L)"
+      ,"l_kanaToken(L)"
+      ,"l_formOrthBase(L)"
+      ,"l_origChar(L)"
+    ]
+    out = dict()
+    with open(fname) as f:
+        reader = csv.reader(f, delimiter="\t")
+        for row in reader:
+            d = dict(zip(head, row))
+            if "Update" in d["luw(L)"]:
+                d["luw(L)"] = "B"
+            out[f'{d["file(L)"]}_{d["l_start(L)"]}'] = d
+    return out, head
 
 
 def load_chj(fname: str, luw: bool):
@@ -359,7 +434,7 @@ def to_sentences(data, luw:bool):
             buf_t.clear()
         
         buf_n.append(n_)
-        buf_t.append({k: d[k] for k in targets})
+        buf_t.append({k: d.get(k, "") for k in targets})
         
     if len(buf_n) > 0:
         dd = {"sentence": "".join(buf_n), "tokens": buf_t}
@@ -370,6 +445,23 @@ def to_sentences(data, luw:bool):
 @app.command()
 def chj2jsonl(fname: str, luw: bool=True):
     for d in to_sentences(load_chj(fname, luw), luw):
+        print(json.dumps(d, ensure_ascii=False))
+
+def load_hachidai(suw_fname: str, luw_fname: str):
+    luw_d, luw_h = load_hachidai_luw(luw_fname)
+    luw_n = {h: "" for h in luw_h}
+    luw_n["luw(L)"] = "I" 
+    for d in load_hachidai_suw(suw_fname):
+        key = f"{d['file(S)']}_{d['start(S)']}"
+        if key in luw_d:
+            d.update(luw_d[key])
+        else:
+            d.update(luw_n)
+        yield d
+
+@app.command()
+def hachidai2jsonl(suw_fname: str, luw_fname: str):
+    for d in to_sentences(load_hachidai(suw_fname, luw_fname), True):
         print(json.dumps(d, ensure_ascii=False))
 
 
@@ -710,6 +802,39 @@ def luw4lemma(jsonlfile: str):
                 } for i in range(L)]
 
             print(json.dumps(res, ensure_ascii=False))
+
+def load_jsonl(fname: str):
+    with open(fname) as f:
+        for line in f:
+            yield json.loads(line)
+
+
+@app.command()
+def filterNER(basejsonl: str, predjsonl: str, outjsonl: str, nerjsonl: str):
+    with open(outjsonl, "w") as out:
+        ners = list()
+        for b, p in zip(load_jsonl(basejsonl), load_jsonl(predjsonl)):
+            flg = False
+            for tb, tp in zip(b["tokens"], p["tokens"]):
+                if not flg:
+                    flg = "固有名詞" in tb["l_pos(L)"] or "固有名詞" in tp["l_pos(L)"]
+
+                if "固有名詞" in tp["l_pos(L)"] and "固有名詞" not in tb["l_pos(L)"]: ## baseに固有名詞があってpredにある場合は修正候補
+                    ners.append(tp)
+
+            if not flg:
+                print(json.dumps(b, ensure_ascii=False), file=out)
+
+        if len(ners) > 0:
+            fields = None
+            with open(nerjsonl, "w") as ner:
+                wrt = csv.writer(ner, delimiter="\t")
+                for n in ners:
+                    if fields is None:
+                        fields = list(n.keys())
+                        wrt.writerow(fields)
+                    wrt.writerow([n[k] for k in fields])
+
 
 
 @app.command()

@@ -135,7 +135,7 @@ SUW_LIST = [
     "lemma(S)",
     "meaning(S)",
     "pos(S)",
-    "cType(S)",
+    "sysCType(S)",
     "cForm(S)",
     "usage(S)",
     "pronToken(S)",
@@ -151,6 +151,36 @@ SUW_LIST = [
     "charEncloserOpen(S)",
     "charEncloserClose(S)",
     "originalText(S)"
+]
+
+
+SUW2_LIST = [
+    "file(S)",
+    "start(S)",
+    "end(S)",
+    "boundary(S)",
+    "orthToken(S)",
+    "reading(S)",
+    "lemma(S)",
+    "meaning(S)",
+    "pos(S)",
+    "sysCType(S)",
+    "cForm(S)",
+    "usage(S)",
+    "pronToken(S)",
+    "pronBase(S)",
+    "kana(S)",
+    "kanaBase(S)",
+    "form(S)",
+    "formBase(S)",
+    "formOrthBase(S)",
+    "formOrth(S)",
+    "orthBase(S)",
+    "wType(S)",
+    "charEncloserOpen(S)",
+    "charEncloserClose(S)",
+    "originalText(S)",
+    "rn"
 ]
 
 prv = 0
@@ -565,6 +595,8 @@ def test_loader(inputfile: Path, batch: int=1, input_format: str="suw", output_f
         reader = jsonl_reader(inputfile, batch)
     elif input_format == "suw":
         reader = bccwj_reader(inputfile, batch, SUW_LIST)
+    elif input_format == "suw2":
+        reader = bccwj_reader(inputfile, batch, SUW2_LIST)
     else:
         reader = bccwj_reader(inputfile, batch, BCPEXPORT_LIST)
     
