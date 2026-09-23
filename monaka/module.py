@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+"""Monakaで用いる深層学習モジュール群
+
+"""
 
 import math
 import torch
@@ -11,20 +14,54 @@ from transformers import AutoModel, AutoConfig, T5EncoderModel
 
 
 class LMEmbedding(nn.Module, Registrable):
+    """言語モデルで用いる埋め込みのための基底クラス
+
+    基底クラス:
+        torch.nn.Module: Pytorchのモジュール基底クラス
+        Registrable: Registrable基底クラス。テキストで付与された名前でモジュールを呼び出すことができる。
+
+    Arrtributes:
+        n_out (int): 出力の次元数
+        n_vocab (int): 語彙の語数
+    """
    
-   def __init__(self, *args, **kwargs) -> None:
-    self.n_out = kwargs.get("n_out", 0)
-    self.n_vocab = kwargs.get("n_vocab", 0)
-    nn.Module.__init__(self)
-    Registrable.__init__(self)
+    def __init__(self, *args, **kwargs) -> None:
+        """言語モデルで用いる埋め込みのための基底クラスのinit
+
+        Args:
+            n_out (int): 出力の次元数
+            n_vocab (int): 語彙の語数
+        """
+        self.n_out = kwargs.get("n_out", 0)
+        self.n_vocab = kwargs.get("n_vocab", 0)
+        nn.Module.__init__(self)
+        Registrable.__init__(self)
 
     @classmethod
     def from_config(cls, config: Dict):
+        """JSON形式のコンフィグからの生成
+
+        Args:
+            config (Dict): JSON形式のコンフィグ
+
+        Returns:
+            monaka.module.LMEmbedding: 生成されたクラス
+        """
         return cls(**config)
    
 
 @LMEmbedding.register("FixedEmb")
 class FixedEmbedding(LMEmbedding):
+    """固定長の埋め込み
+
+    基底クラス:
+        LMEmbedding: 言語モデルで用いる埋め込みのための基底クラス
+
+    Arrtributes:
+        n_out (int): 出力の次元数
+        n_vocab (int): 語彙の語数
+        padding_index (int): [PAD]のインデックス
+    """
 
     def __init__(self, n_out, n_vocab, padding_index, *args, **kwargs):
         super().__init__(n_out, n_vocab, padding_index, *args, **kwargs)
@@ -37,9 +74,16 @@ class FixedEmbedding(LMEmbedding):
 @LMEmbedding.register("AutoLM")
 class AutoLMEmebedding(LMEmbedding):
     """
-   TransformersのAutoConfigとAutoModelを利用するEmbedding
+    TransformersのAutoConfigとAutoModelを利用するEmbedding
 
-    Args:
+    基底クラス:
+        LMEmbedding: 言語モデルで用いる埋め込みのための基底クラス
+
+    Arrtributes:
+        n_out (int): 
+            出力の次元数
+        n_vocab (int): 
+            語彙の語数
         model (str):
             モデル名
         requires_grad (bool):
@@ -121,10 +165,17 @@ class AutoLMEmebedding(LMEmbedding):
 
 @LMEmbedding.register("T5Encoder")
 class T5EncoderEmbedding(AutoLMEmebedding):
-   """
-   T5Encoderを利用するEmbedding
+    """
+    T5Encoderを利用するEmbedding
 
-    Args:
+    基底クラス:
+        AutoLMEmebedding: TransformersのAutoConfigとAutoModelを利用するEmbedding
+
+    Arrtributes:
+        n_out (int): 
+            出力の次元数
+        n_vocab (int): 
+            語彙の語数
         model (str):
             モデル名
         requires_grad (bool):
@@ -137,40 +188,40 @@ class T5EncoderEmbedding(AutoLMEmebedding):
             attentionを出力するかどうか
         max_len (int):
             最大subword長 default 5120
-   """
+    """
    
-   def __init__(self, model: str, requires_grad: bool, use_scalar_mix: bool, sclar_mix_dropout:float = 0.1, use_attentions: bool=False, max_len: int=5120, **kwargs) -> None:
-    self.model = model
-    self.requires_grad = requires_grad
-    self.use_scalar_mix = use_scalar_mix
-    self.sclar_mix_dropout = sclar_mix_dropout
-    self.use_attentions = use_attentions
-    self.max_len = max_len
+    def __init__(self, model: str, requires_grad: bool, use_scalar_mix: bool, sclar_mix_dropout:float = 0.1, use_attentions: bool=False, max_len: int=5120, **kwargs) -> None:
+        self.model = model
+        self.requires_grad = requires_grad
+        self.use_scalar_mix = use_scalar_mix
+        self.sclar_mix_dropout = sclar_mix_dropout
+        self.use_attentions = use_attentions
+        self.max_len = max_len
 
-    self.config = AutoConfig.from_pretrained(model, output_hidden_states=True,
-                                            output_attentions=use_attentions)
-    self.lm = T5EncoderModel.from_pretrained(model, config=self.config)
-    self.lm.requires_grad_(requires_grad)
-    self.n_layers = self.config.num_hidden_layers
-    self.pad_index = self.config.pad_token_id
-    self.sclar_mix = ScalarMix(self.n_layers, sclar_mix_dropout)
+        self.config = AutoConfig.from_pretrained(model, output_hidden_states=True,
+                                                output_attentions=use_attentions)
+        self.lm = T5EncoderModel.from_pretrained(model, config=self.config)
+        self.lm.requires_grad_(requires_grad)
+        self.n_layers = self.config.num_hidden_layers
+        self.pad_index = self.config.pad_token_id
+        self.sclar_mix = ScalarMix(self.n_layers, sclar_mix_dropout)
 
-    LMEmbedding.__init__(self, n_out=self.config.hidden_size, n_vocab=self.config.vocab_size)
+        LMEmbedding.__init__(self, n_out=self.config.hidden_size, n_vocab=self.config.vocab_size)
     
 
 
 class MLP(nn.Module):
     r"""
-    Applies a linear transformation together with :class:`~torch.nn.LeakyReLU` activation to the incoming tensor:
+    多重線形パーセプトロン層 (Multi-Layered Perceptron; MLP) :class:`~torch.nn.LeakyReLU` activation:
     :math:`y = \mathrm{LeakyReLU}(x A^T + b)`
 
-    Args:
-        n_in (~torch.Tensor):
-            The size of each input feature.
-        n_out (~torch.Tensor):
-            The size of each output feature.
+    Arrtributes:
+        n_in (int):
+            入力次元数
+        n_out (int):
+            出力次元数
         dropout (float):
-            If non-zero, introduce a :class:`SharedDropout` layer on the output with this dropout ratio. Default: 0.
+            もしゼロでないなら :class:`SharedDropout` を出力に指定のDropout率で付与。 Default: 0.
     """
 
     def __init__(self, n_in, n_out, dropout=0):
@@ -199,10 +250,10 @@ class MLP(nn.Module):
         r"""
         Args:
             x (~torch.Tensor):
-                The size of each input feature is `n_in`.
+                特徴量の次元数が `n_in`　であるテンソル.
 
         Returns:
-            A tensor with the size of each output feature `n_out`.
+            `n_out`次元数の特徴量を持つテンソル.
         """
 
         x = self.linear(x)
@@ -213,6 +264,18 @@ class MLP(nn.Module):
 
 
 class Biaffine(nn.Module):
+    """Biaffine注意層
+
+    Args:
+        n_in (int):
+            入力次元数
+        n_out (int):
+            出力次元数
+        bias_x (bool):
+            切片(bias)を左側のaffine変換に追加するか
+        bias_y (bool):
+            切片(bias)を右側のaffine変換に追加するか
+    """
 
     def __init__(self, n_in, n_out=1, bias_x=True, bias_y=True):
         super(Biaffine, self).__init__()
@@ -252,19 +315,15 @@ class Biaffine(nn.Module):
 
 
 class ScalarMix(nn.Module):
-    r"""
-    Computes a parameterised scalar mixture of :math:`N` tensors, :math:`mixture = \gamma * \sum_{k}(s_k * tensor_k)`
-    where :math:`s = \mathrm{softmax}(w)`, with :math:`w` and :math:`\gamma` scalar parameters.
+    r"""言語モデルの各層に重みをつけて混ぜ合わせる層(ScalarMix)
+    ScalarMixの計算 :math:`N` tensors, :math:`mixture = \gamma * \sum_{k}(s_k * tensor_k)`
+    :math:`s = \mathrm{softmax}(w)`, with :math:`w` and :math:`\gamma` scalar parameters.
 
     Args:
         n_layers (int):
-            The number of layers to be mixed, i.e., :math:`N`.
+            混ぜ合わせる層数, i.e., :math:`N`.
         dropout (float):
-            The dropout ratio of the layer weights.
-            If dropout > 0, then for each scalar weight, adjust its softmax weight mass to 0
-            with the dropout probability (i.e., setting the unnormalized weight to -inf).
-            This effectively redistributes the dropped probability mass to all other weights.
-            Default: 0.
+            ドロップアウト率
     """
 
     def __init__(self, n_layers: int, dropout: float = 0.0):
@@ -287,10 +346,10 @@ class ScalarMix(nn.Module):
         r"""
         Args:
             tensors (list[~torch.Tensor]):
-                :math:`N` tensors to be mixed.
+                :math:`N` 混ぜ合わせるテンソル.
 
         Returns:
-            The mixture of :math:`N` tensors.
+            混ぜ合わせたテンソル :math:`N`.
         """
 
         normed_weights = self.dropout(self.weights.softmax(-1))
@@ -300,8 +359,8 @@ class ScalarMix(nn.Module):
 
 
 class SelfAttentionPooling(nn.Module):
-    """
-    Implementation of SelfAttentionPooling 
+    """自己注意Pooling機構
+    重要度を自分で判定して（自己注意）Poolingする機構
     Original Paper: Self-Attention Encoding and Pooling for Speaker Recognition
     https://arxiv.org/pdf/2008.01077v1.pdf
     """
@@ -313,13 +372,14 @@ class SelfAttentionPooling(nn.Module):
     def forward(self, batch_rep, dim=1, keepdim=True):
         """
         input:
-            batch_rep : size (N, T, H), N: batch size, T: sequence length, H: Hidden dimension
+            batch_rep : size (N, T, H), N: batch size, T: 系列長, H: 隠れ層
         
         attention_weight:
             att_w : size (N, T, 1)
         
-        return:
-            utter_rep: size (N, H)
+        Returns:
+            ~torch.Tensor:
+                系列中のテンソルをまとめ上げる: size (N, H)
         """
         softmax = nn.functional.softmax
         att_w = softmax(self.W(batch_rep).squeeze(-1), dim=dim).unsqueeze(-1)
@@ -333,6 +393,17 @@ class SelfAttentionPooling(nn.Module):
     
 
 class PositionalEncoding(nn.Module):
+    """PositionEncoding: 位置エンコーディング
+
+    Transformerで失われる位置情報を埋め込みとして表現する
+    Args:
+        d_model (int):
+            位置エンコーディングの次元数
+        dropout (float):
+            ドロップアウト率
+        max_len (int):
+            最大長
+    """
 
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
@@ -347,8 +418,14 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Arguments:
-            x: Tensor, shape ``[seq_len, batch_size, embedding_dim]``
+        Args:
+            x (~torch.Tensor):
+                shape ``[seq_len, batch_size, embedding_dim]``
+        
+        Returns:
+            ~torch.Tensor:
+                shape ``[seq_len, batch_size, embedding_dim]``
+
         """
         x = x + self.pe[:x.size(0)]
         return self.dropout(x)

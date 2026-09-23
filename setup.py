@@ -53,6 +53,10 @@ setuptools.setup(
         "Train": [
             "tensorboard",
             "tqdm"
+        ],
+        "Doc": [
+            "sphinx",
+            "pydata-sphinx-theme"
         ]
     }
 )

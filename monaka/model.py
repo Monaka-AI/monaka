@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+"""Monakaの深層学習モデル群
+
+"""
 
 import os
 import sys
@@ -17,6 +20,9 @@ from monaka.mylogging import logger
 
 
 class LUWParserModel(nn.Module, Registrable):
+    """文節・長単位の境界・品詞推定を行うモデルの基底クラス
+
+    """
 
     def __init__(self, *args, **kwargs) -> None:
         nn.Module.__init__(self)
@@ -24,6 +30,23 @@ class LUWParserModel(nn.Module, Registrable):
 
     @classmethod
     def from_config(cls, config: Dict, label_file: str, pos_file: str, rel_file: str=None, wlsp_file:str=None, **kwargs):
+        """コンフィグファイルからの生成メソッド
+
+        Args:
+            config (Dict):
+                コンフィグ
+            label_file (str): 
+                推定する対象（ラベル）の名前とIDが記載されたJSONファイルへのパス
+            pos_file (str):
+                短単位品詞の名前とIDが記載されたJSONファイルへのパス
+            rel_file (str, optional): 
+                係り受け関係の関係の名前とIDが記載されたJSONファイルへのパス. Defaults to None.
+            wlsp_file (str, optional): 
+                分類語彙表の情報を記載したファイルへのパス. Defaults to None.
+
+        Returns:
+            LUWParserModel: 生成されたモデル
+        """
         with open(label_file) as f:
             js = json.load(f)
             config["n_class"] = len(js)
@@ -50,7 +73,8 @@ class LUWParserModel(nn.Module, Registrable):
     
     def loss(self, out, labels, mask, *args, **kwargs) -> torch.Tensor:
         raise NotImplementedError
-    
+
+
 class LUWLemmaModel(nn.Module, Registrable):
     """
     語彙素原形を推定するモデルの基底クラス
@@ -62,6 +86,14 @@ class LUWLemmaModel(nn.Module, Registrable):
 
     @classmethod
     def from_config(cls, config: Dict,  **kwargs):
+        """コンフィグファイルからの生成メソッド
+
+        Args:
+            config (Dict): コンフィグ
+
+        Returns:
+            LUWLemmaModel: 生成されたモデル
+        """
 
         return cls(**config)
 
@@ -72,93 +104,10 @@ class LUWLemmaModel(nn.Module, Registrable):
         raise NotImplementedError
     
 
-@LUWLemmaModel.register("FixLen")
-class FixLenLemmaModel(LUWLemmaModel):
-    """
-    固定長のサブワードで原形を推定するモデル
-
-    Args:
-        lm_class_name (str):
-            用いるlm class名 TrasformersのAutoConfig, AutoModelなどが上手く使えない場合は専用クラスが用意されている。
-        lm_class_config (dict):
-            lm_class用のconfig
-        max_len: (int)
-            原形のサブワード最大長
-        dropout: (float)
-            dropout
-    """
-
-    def __init__(self,
-            lm_class_name: str,
-            lm_class_config: Dict,
-            max_len: int,
-            dropout: float, 
-            **kwargs) -> None:
-        super().__init__(**kwargs)
-
-        self.max_len = max_len
-        self.dropout = dropout
-        self.lm_class_name = lm_class_name
-        self.lm_class_config = lm_class_config
-
-        self.m_lm = LMEmbedding.by_name(lm_class_name)(**lm_class_config)
-        self.m_out = MLP(self.m_lm.n_out, self.m_lm.n_vocab) # 埋め込み表現次元 -> subword ID
-
-        self.criterion = nn.CrossEntropyLoss()
-        
-    def forward(self, inputs: torch.Tensor, target: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-
-        """
-        inputs: [batch, subwords_len]
-        target: [batch, subword_len] the indices pointing to target luw
-        """
-        words_emb = self.m_lm(inputs)
-        L = torch.max(target) + 1
-        embs = list()
-
-        for i in range(L):
-            wi = target.eq(i).unsqueeze(-1)
-            l = torch.sum(wi)
-            mask = torch.cat([wi for _ in range(words_emb.size()[-1])], dim=-1) # batch, n subwords, hidden
-            #print(words_emb.size())
-            #print(mask.size())
-            #_o = words_emb * mask # batch (actually = 1), num of subwords in a word, hidden (acctually masked zero)
-            _o = words_emb[mask].reshape((l, words_emb.size()[-1]))
-            if l > self.max_len:
-                _o = _o[:self.max_len, :]
-            embs.append(_o)
-
-        # サイズを維持するためにわざと追加
-        temp_embs = words_emb[0, :self.max_len, :]
-        embs.append(temp_embs)
-            
-
-        embs = pad_sequence(embs, batch_first=True) # target luw + 1, self.max_len, hidden
-        #print(embs.size())
-        embs = embs[:-1, :, :] # target luw, self.max_len, hidden
-        #print(embs.size())
-        out = self.m_out(embs)
-
-        return out
-
-    def loss(self, out: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor, *args, **kwargs):
-        """
-        out: [target luw, self.max_len, n_class]
-        labels: [target luw, max lemma, 1]
-        mask: mask
-        """
-
-        osize = out.size()
-        labels_ = torch.zeros((osize[0], osize[1], 1), device=out.device, dtype=torch.long)
-        lsize = labels.size()
-        labels_[:lsize[0], :lsize[1], :] = labels.unsqueeze(-1)
-        #print(out.size(), labels_.size())
-        return self.criterion(out.flatten(0, 1), labels_.flatten()) 
-
 @LUWParserModel.register("SeqTagging")
 class SeqTaggingParserModel(LUWParserModel):
     """
-    SubwordレベルでSequence Taggingするモデル
+    SubwordレベルでSequence Taggingするモデル。Registableで呼び出すときは`SeqTagging`
 
     Args:
         n_pos (int):
@@ -212,8 +161,16 @@ class SeqTaggingParserModel(LUWParserModel):
 
     def forward(self, words: torch.Tensor, word_ids: torch.Tensor, pos: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         """
-        words: [batch, words_len]
-        pos: [batch, owrds_len]
+        Args:
+            words (~torch.Tensor):
+                入力文をサブワード分割して埋め込み表現に変換したもの。shape [batch, words_len, emb], words_lenは最大サブワード長と一致
+            word_ids (~torch.Tensor):
+                他のモデルとの互換性のために指定しているが不使用。
+            pos (~torch.Tensor):
+                サブワードに対応する短単位品詞のID列 shape [batch, wrds_len]
+
+        Returns:
+            ~torch.Tensor: shape [batch, words_len, n_class] n_classはラベルの次元数。尤もらしいクラスに対応する次元の値が一番大きくなるように学習
         """
         #print(words.size())
         words_emb = self.m_lm(words)
@@ -230,12 +187,20 @@ class SeqTaggingParserModel(LUWParserModel):
         return out # batch, words_len, n_class
     
     def loss(self, out: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor, *args, **kwargs):
-        """
-        out: [batch, words_len, n_class]
-        labels: [batch, 1]
-        mask: mask
+        """損失関数
+
+        Args:
+            out (~torch.Tensor):
+                モデルの出力 shape [batch, words_len, n_class]
+            labels (~torch.Tensor): [batch, words_len, 1]
+                正解ラベル
+            mask (~torch.Tensor): 
+                バッチ中の最大サブワード長を基準としたテンソルとなっているので、推論に関係する次元のみで損失を計算する。maskは文中であれば1、そうでなければ0となっている、[batch, words_len] テンソル。
         """
 
+        out_size = out.size()
+        mask = mask[:out_size[0], :out_size[1]]
+        labels = labels[:out_size[0], :out_size[1]]
         return self.criterion(out[mask], labels[mask])
 
 
@@ -243,7 +208,7 @@ class SeqTaggingParserModel(LUWParserModel):
 @LUWParserModel.register("WordTagging")
 class WordTaggingParserModel(LUWParserModel):
     """
-    WordレベルでSequence Taggingするモデル
+    WordレベルでSequence Taggingするモデル Registableで呼び出すときは`WordTagging`
 
     Args:
         n_pos (int):
@@ -310,15 +275,29 @@ class WordTaggingParserModel(LUWParserModel):
 
     @staticmethod
     def max(value, **kwargs):
+        """~torch.max のラッパー torch.maxはその値を取り出すときに、.valueを参照する必要がある
+
+        Args:
+            value (~torch.Tensor): maxをとる対象のテンソル
+
+        Returns:
+            ~torch.Tensor: max値
+        """
         return torch.max(value, **kwargs).values
 
     def forward(self, words: torch.Tensor, word_ids: torch.Tensor, pos: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         """
-        words: [batch, subwords_len]
-        word_ids: [batch, subword_len] the indices pointing to original words
-        pos: [batch, words_len]
+        Args:
+            words (~torch.Tensor):
+                入力文をサブワード分割して埋め込み表現に変換したもの。shape [batch, subwords_len, emb], subwords_lenは最大サブワード長と一致
+            word_ids (~torch.Tensor):
+                各サブワードに対応する短単位語の文頭からの位置（0始まり）。 shape [batch, subword_len]
+            pos (~torch.Tensor):
+                サブワードに対応する短単位品詞のID列 shape [batch, words_len] words_lenは最大短単位語数に一致
+        
+        Returns:
+            ~torch.Tensor: shape [batch, words_len, n_class] n_classはラベルの次元数。尤もらしいクラスに対応する次元の値が一番大きくなるように学習
         """
-        #print(words.size())
         words_emb = self.m_lm(words)
 
         we = list()
@@ -329,8 +308,6 @@ class WordTaggingParserModel(LUWParserModel):
         for i in range(L):
             wi = word_ids.eq(i).unsqueeze(-1)
             mask = torch.cat([wi for _ in range(words_emb.size()[-1])], dim=-1)
-            #print(words_emb.size())
-            #print(mask.size())
             _o = words_emb * mask # batch, num of subwords in a word, hidden (acctually masked zero)
             we.append(self.pooling(_o, dim=1, keepdim=True)) # batch, 1, hidden
 
@@ -340,18 +317,21 @@ class WordTaggingParserModel(LUWParserModel):
             #print(pos)
             pos_embs = self.m_pos_emb(pos)
             pos_embs = self.m_pos_dropout(pos_embs)
-            #print(words_emb.size())
-            #print(pos_embs.size())
             words_emb = torch.cat((words_emb, pos_embs), dim=-1) # batch, words_len, hidden
 
         out = self.m_out(words_emb) # batch, len, hidden
         return out # batch, words_len, n_class
     
     def loss(self, out: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor, *args, **kwargs):
-        """
-        out: [batch, words_len, n_class]
-        labels: [batch, 1]
-        mask: mask
+        """損失関数
+
+        Args:
+            out (~torch.Tensor):
+                モデルの出力 shape [batch, words_len, n_class]
+            labels (~torch.Tensor): [batch, words_len, 1]
+                正解ラベル
+            mask (~torch.Tensor): 
+                バッチ中の最大サブワード長を基準としたテンソルとなっているので、推論に関係する次元のみで損失を計算する。maskは文中であれば1、そうでなければ0となっている、[batch, words_len] テンソル。
         """
         out_size = out.size()
         mask = mask[:out_size[0], :out_size[1]]
@@ -364,7 +344,7 @@ class WordTaggingParserModel(LUWParserModel):
 @LUWParserModel.register("ChunkDep")
 class ChunkDependencyParserModel(LUWParserModel):
     """
-    文節係り受けモデル
+    文節係り受けモデル  Registableで呼び出すときは`ChunkDep`
 
     Args:
         n_pos (int):
@@ -510,6 +490,14 @@ class ChunkDependencyParserModel(LUWParserModel):
 
     @staticmethod
     def max(value, **kwargs):
+        """~torch.max のラッパー torch.maxはその値を取り出すときに、.valueを参照する必要がある
+
+        Args:
+            value (~torch.Tensor): maxをとる対象のテンソル
+
+        Returns:
+            ~torch.Tensor: max値
+        """
         return torch.max(value, **kwargs).values
 
     def forward(self, words: torch.Tensor, word_ids: torch.Tensor, chunk_ids: torch.Tensor, pos: torch.Tensor, wlsp: torch.Tensor, *args, **kwargs) -> torch.Tensor:

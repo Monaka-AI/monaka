@@ -1,3 +1,8 @@
+"""bccwj_util.py
+
+BCCWJ関連のファイルを処理するためのツール群をまとめたモジュール
+"""
+
 import typer
 import json
 import csv
@@ -79,12 +84,13 @@ BCPEXPORT_LIST = [
 ]
 
 @app.command()
-def test():
-    print("test")
-
-
-@app.command()
 def diff(gold: str, pred: str):
+    """長単位解析前後で変わらない要素に変化があるかを調べる
+
+    Args:
+        gold (str): 入力前、あるいは正解のBCCWJ用TSV
+        pred (str): 長単位解析後のBCCWJ用出力TSV
+    """
     with open(gold) as f1:
         with open(pred) as f2:
             grd = csv.reader(f1, delimiter="\t")
@@ -104,10 +110,17 @@ def diff(gold: str, pred: str):
                     g_text = "_".join(rg[:5])
                     
 
-
-
 @app.command()
 def export_tsv(base: str, target: str):
+    """JSON-L形式のデータをBCCWJ用のTSV形式に変換する
+        * JSON-L形式のデータへの変換には、utii.py chj2jsonl を用いる
+        * 学習用JSON-Lデータは 上記のJSON-Lデータを util.py chjjsonl2luwjson で変換したもの
+        * 結果は標準出力に出る
+
+    Args:
+        base (str): JSON-L形式のBCCWJデータ
+        target (str): 学習用JSON-Lデータ
+    """
     based = dict()
     with open(base) as f:
         for line in f:
@@ -126,6 +139,16 @@ def export_tsv(base: str, target: str):
 
 @app.command()
 def evaluate(gold: str, pred: str, corrects :List[str]=["luw(L)"], errors :List[str]=["l_orthToken(L)"], fields: List[str]=["bunsetsu1(L)", "luw(L)", "l_orthToken(L)", "l_reading(L)", "l_pos(L)", "l_cType(L)", "l_cForm(L)"]):
+    """精度評価スクリプト
+        * 結果は標準出力
+
+    Args:
+        gold (str): 正解のBCCWJ用TSV
+        pred (str): 解析結果のBCCWJ用TSV
+        corrects (List[str], optional): 正解として表示するフィールド. Defaults to ["luw(L)"].
+        errors (List[str], optional): 不正解として表示するフィールド. Defaults to ["l_orthToken(L)"].
+        fields (List[str], optional): 評価対象のフィールド. Defaults to ["bunsetsu1(L)", "luw(L)", "l_orthToken(L)", "l_reading(L)", "l_pos(L)", "l_cType(L)", "l_cForm(L)"].
+    """
     output = dict()
     with open(gold) as f1:
         grd = csv.reader(f1, delimiter="\t")
@@ -175,29 +198,6 @@ def evaluate(gold: str, pred: str, corrects :List[str]=["luw(L)"], errors :List[
     
     for field, d in output.items():
         print(f"{field} count: {d['a']} correct: {d['c']} acc: {d['c']/d['a']}")
-
-
-def bcploader(fname: str):
-    with open(fname) as f:
-        rd = csv.reader(f)
-        buf = list()
-        for row in rd:
-            d = {k: v for k, v in zip(BCPEXPORT_LIST, row)}
-            if d['boundary(S)'] == 'B':
-                yield buf
-                buf.clear()
-            buf.append(d)
-    if len(buf) > 0:
-        yield buf
-
-
-@app.command()
-def extract_ner(bcpexportfile: str):
-    nlp = spacy.load('ja_ginza_electra')
-    for sent in bcploader(bcpexportfile):
-        sentence = ''.join([d['originalText(S)'] for d in sent])
-        doc = nlp(sentence)
-
 
 
 if __name__ == "__main__":
