@@ -39,7 +39,7 @@ class ChunkDepJsonLDataset(torch.utils.data.Dataset):
         }
 
     Attributes:
-        tokenizer (monaka.tokenizer.Tokenizer): 言語モデル固有のトークナイザ
+        tokenizer (~monaka.tokenizer.Tokenizer): 言語モデル固有のトークナイザ
         pad_token_id (int): [PAD]トークンのID番号
         max_length (int): 最大文長
         chunk_max_length (int): 最大文節数
@@ -48,6 +48,21 @@ class ChunkDepJsonLDataset(torch.utils.data.Dataset):
         jsonlfiles: 読み込むJSON-Lファイルのリスト(JSON-Lを対象としない場合でも内部的にJSON-Lと同等のデータ形式で保持)
         logger (logging.Logger): ログ出力用のロガー
         
+    Args:
+        jsonlfiles (Union[str, List[str]]): 読み込むJSON-Lファイルのリスト(JSON-Lを対象としない場合でも内部的にJSON-Lと同等のデータ形式で保持)
+        label_file (str): 
+            全ラベルを記載したjsonファイル label: id 形式。未知ラベルは常に unk: 0 train_cli.py create-vocab で作成する
+        pos_file (str): 
+            短単位品詞IDを記載したJSONファイル label: id 形式。未知ラベルは常に unk: 0 pos_as_tokensの時は利用されない。 train_cli.py create-vocab で作成する。
+        rel_file (str): 係り受け関係ラベルとそのIDが記載されたJSONファイル train_cli.py create-vocab で作成する
+        lm_tokenizer (str): 
+            適切なTransoformesのTokenizerをラップしたTokenizer名
+        lm_tokenizer_config (Dict): 言語モデルのトークナイザに渡す設定データ
+        wlsp_file (str, optional): 分類語彙表データへのパス. Defaults to None.
+        max_length (int, optional): 最大文長. Defaults to 1024.
+        chunk_max_length (int, optional): 最大文節数. Defaults to 128.
+        logger (~logging.Logger, optional): ログ出力用のロガー. Defaults to :py:const:`~monaka.mylogging.logger`.
+        store_all (bool, optional): 全ての情報を保持するかのフラグ. Defaults to False (保持しない).
     """
 
     def __init__(self, jsonlfiles: Union[str, List[str]], label_file: str, pos_file: str, rel_file: str, lm_tokenizer: str, lm_tokenizer_config: Dict, wlsp_file:str=None, max_length: int=1024,  chunk_max_length: int=128, logger=logger, store_all: bool=False, 
@@ -67,7 +82,7 @@ class ChunkDepJsonLDataset(torch.utils.data.Dataset):
             wlsp_file (str, optional): 分類語彙表データへのパス. Defaults to None.
             max_length (int, optional): 最大文長. Defaults to 1024.
             chunk_max_length (int, optional): 最大文節数. Defaults to 128.
-            logger (logging.Logger, optional): ログ出力用のロガー. Defaults to monaka.mylogging.logger.
+            logger (~logging.Logger, optional): ログ出力用のロガー. Defaults to :py:const:`~monaka.mylogging.logger`.
             store_all (bool, optional): 全ての情報を保持するかのフラグ. Defaults to False (保持しない).
         """
         self.sentences = list()
@@ -362,7 +377,7 @@ class LUWJsonLDataset(torch.utils.data.Dataset):
 
     Attributes:
         sentences (list[Dict]): 読み込んだデータを保持したもの
-        tokenizer (monaka.tokenizer.Tokenizer): 言語モデル固有のトークナイザ
+        tokenizer (~monaka.tokenizer.Tokenizer): 言語モデル固有のトークナイザ
         pad_token_id (int): [PAD]トークンのID番号
         pos_as_tokens (bool): 品詞情報を言語モデルに直接入力するかどうか 
         max_length (int): 最大文長
@@ -372,6 +387,29 @@ class LUWJsonLDataset(torch.utils.data.Dataset):
         jsonlfiles: 読み込むJSON-Lファイルのリスト(JSON-Lを対象としない場合でも内部的にJSON-Lと同等のデータ形式で保持)
         logger (logging.Logger): ログ出力用のロガー
 
+    Args:
+        jsonlfiles (Union[str, List[str]]): 
+            読み込み対象のファイル名（のリスト)
+        label_file (str): _description_
+            全ラベルを記載したjsonファイル label: id 形式。未知ラベルは常に unk: 0
+        pos_file (str): 
+            短単位品詞IDを記載したJSONファイル label: id 形式。未知ラベルは常に unk: 0 pos_as_tokensの時は利用されない。 train_cli.py create-vocab で作成する。
+        lm_tokenizer (str): 
+            適切なTransoformesのTokenizerをラップしたTokenizer名
+        lm_tokenizer_config (Dict): 
+            言語モデルのトークナイザに渡す設定データ
+        max_length (int, optional): 
+            言語モデルのトークナイザに渡す設定データ. Defaults to 1024.
+        pos_as_tokens (bool, optional): 
+            形態論情報を短単位の後に付与するかどうか. Defaults to False.
+        label_for_all_subwords (bool, optional): 
+            サブワード単位でラベル付けをする。. Defaults to False.
+        logger (logging.Logger, optional): 
+            ログ出力用のロガー. Defaults to :py:const:`~monaka.mylogging.logger`
+        store_all (bool, optional): 
+            全ての情報を保持するかのフラグ. Defaults to False (保持しない).
+        fold_sentence (bool, optional): 
+            推論時に最大長(max_length)を超える文を「折り曲げて」格納して、複数回の推論で一文を処理するかどうか (Falseにすると先頭からmax_lengthまでを処理). Defaults to False.
     """
 
     def __init__(self, jsonlfiles: Union[str, List[str]], label_file: str, pos_file: str, lm_tokenizer: str, lm_tokenizer_config: Dict, max_length: int=1024, pos_as_tokens: bool=False, 
@@ -397,7 +435,7 @@ class LUWJsonLDataset(torch.utils.data.Dataset):
             label_for_all_subwords (bool, optional): 
                 サブワード単位でラベル付けをする。. Defaults to False.
             logger (logging.Logger, optional): 
-                ログ出力用のロガー. Defaults to monaka.mylogging.logger
+                ログ出力用のロガー. Defaults to :py:const:`~monaka.mylogging.logger`
             store_all (bool, optional): 
                 全ての情報を保持するかのフラグ. Defaults to False (保持しない).
             fold_sentence (bool, optional): 
@@ -723,19 +761,20 @@ class LemmaJsonDataset(torch.utils.data.Dataset):
                 "input": "pos: 名詞-普通名詞-一般 surface: やまとうた suw_pos: 名詞-固有名詞-地名-一般 名詞-普通名詞-一般 suw_surface: やまと うた suw_lemma: ヤマト 歌" #入力形式
 
             }
-            
+
         }
 
     Args:
-        jsonfiles (str or list[str]):
-            読み込み対象のファイル名（のリスト)
-        transformer_name (str):
-            Transformers.from_pretrainedで読めるもの
-        fields (List[str]):
-            指定したフィールドをjsonから取得し、入力に変換する
-        kwargs (dict):
-            Keyword arguments that will be passed into :meth:`transform.load` together with `data`
-            to control the loading behaviour.
+        jsonfiles (Union[str, List[Union[str, Dict]]]): 
+            読み込むJSONファイル。
+        transformer_name (str): 
+            言語モデル名(HuggingFace Transformersにおける名前)
+        max_length (int, optional): 
+            最大トークン長. Defaults to 512.
+        fields (Optional[List[str]], optional): 
+            語彙素推定に用いる情報を表すfield。読み込むJSONにおけるkeyになっている. Defaults to None.
+        logger (logging.Logger): 
+            ログ出力用のロガー. Defaults to :py:const:`~monaka.mylogging.logger`.
 
     Attributes:
     """
@@ -754,7 +793,7 @@ class LemmaJsonDataset(torch.utils.data.Dataset):
             fields (Optional[List[str]], optional): 
                 語彙素推定に用いる情報を表すfield。読み込むJSONにおけるkeyになっている. Defaults to None.
             logger (logging.Logger): 
-                ログ出力用のロガー. Defaults to monaka.mylogging.logger.
+                ログ出力用のロガー. Defaults to :py:const:`~monaka.mylogging.logger`.
         """
         self.lemma = list()
         self.max_length = max_length

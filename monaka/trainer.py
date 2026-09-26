@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+"""モデル学習を行うクラス群"""
 
 import os
 import json
@@ -30,6 +31,12 @@ import numpy as np
 logger = None
 
 def torch_fix_seed(seed=419):
+    """実験再現性のためにPyTorchの乱数シード値を指定する関数
+
+    Args:
+        seed (int, optional): 
+            乱数シード値. Defaults to 419.
+    """
     # Python random
     random.seed(seed)
     # Numpy
@@ -41,6 +48,12 @@ def torch_fix_seed(seed=419):
     torch.use_deterministic_algorithms = True
 
 class Trainer(Registrable):
+    """モデル学習の基底クラス
+
+    Args:
+        device (int):
+            学習を行う際のGPU番号。負の値はCPU利用
+    """
     
     def __init__(self, *args, **kwargs):
         Registrable.__init__(self)
@@ -54,6 +67,52 @@ class Trainer(Registrable):
 
 @Trainer.register("dependency")
 class DependencyTrainer(Trainer):
+    """文節係り受け学習クラス
+
+    Registrableで呼び出す際の名前は "dependency"
+
+    Args:
+        train_files (Union[str, List[str]]): 
+            学習セットのファイルパス（複数可）学習には :py:class:`~monaka.dataset.ChunkDepJsonLDataset` 準拠のJSON-Lデータである必要がある
+        dev_files (Union[str, List[str]]):
+            検証セットのファイルパス（複数可） :py:class:`~monaka.dataset.ChunkDepJsonLDataset` 準拠のJSON-Lデータである必要がある
+        test_files (Optional[Union[str, List[str]]]): 
+            評価セットのファイルパス（複数可） :py:class:`~monaka.dataset.ChunkDepJsonLDataset` 準拠のJSON-Lデータである必要がある
+        dataeset_options (Dict): 
+            :py:class:`~monaka.dataset.ChunkDepJsonLDataset` に受け渡す設定データ
+        model_name (str):
+            用いるモデル名。:py:class:`~monaka.model.LUWParserModel` の派生クラスであり、:py:class:`~Registrable`の機能を使って、クラス定義時に付与されたモデル名を指定することができる。例： "ChunkDep"
+        model_config (Dict): 
+            モデルに与える設定データ
+        batch_size (int, optional): 
+            バッチサイズ. Defaults to 8.
+        epochs (int, optional): 
+            エポック数. Defaults to 1.
+        lr (float, optional): 
+            学習率。最適化はAdamで固定。. Defaults to 2e-5.
+        mu (float, optional): 
+            Adamのmu. Defaults to .9.
+        nu (float, optional): 
+            Adamのnu. Defaults to .9.
+        epsilon (float, optional): 
+            Adamのepsilon. Defaults to 1e-12.
+        clip (float, optional): 
+            勾配クリッピング. Defaults to 5.0.
+        decay (float, optional): 
+            学習率減衰. Defaults to .75.
+        decay_steps (float, optional): 
+            学習率減衰の基準ステップ数. Defaults to 5000.
+        patience (float, optional): 
+            学習率減衰が始まるまでの最初のステップ数. Defaults to 100.
+        evaluate_step (int, optional): 
+            評価ステップ数。この数で割り切れる学習ステップ数時に評価を実行する. Defaults to 20.
+        verbose (bool, optional): 
+            デバッグ用の情報等を多く出力するようにするオプション. Defaults to True.
+        seed (int, optional): 
+            乱数シード値. Defaults to 419.
+        output_dir (str, optional): 
+            モデルの出力フォルダ. Defaults to "".
+    """
 
     def __init__(self,
             train_files: Union[str, List[str]],
@@ -163,6 +222,14 @@ class DependencyTrainer(Trainer):
                              find_unused_parameters=True)
 
     def train(self, device: int=-1, local_rank: int=-1):
+        """学習実行
+
+        Args:
+            device (int, optional):
+                学習に使うGPU。負の値はCPU利用. Defaults to -1.
+            local_rank (int, optional):
+                複数GPU用のオプションだが現状は動作しない. Defaults to -1.
+        """
         init_device(str(device), local_rank)
         if dist.is_initialized():
             self.batch_size = self.batch_size // dist.get_world_size()
@@ -261,6 +328,19 @@ class DependencyTrainer(Trainer):
         
     @torch.no_grad()
     def evaluate(self, dataloader, device):
+        """評価実行
+
+        Args:
+            dataloader (~torch.utils.data.DataLoader): 評価データを読み込んだデータローダ
+            device (int): 用いるGPU。trainと同様。
+
+        Raises:
+            e (~Exception): 評価時に何らかのエラーが発生した場合 
+
+        Returns:
+            tupple: 
+                (全体損失, 係り受け損失, 係り受け関係ラベル損失, 短単位語ラベル損失, 係り受け正解率, 係り受け関係ラベル正解率, 短単位語ラベル正解率)
+        """
         dep_correct = 0
         dep_length = 0
         rel_correct = 0
@@ -314,6 +394,11 @@ class DependencyTrainer(Trainer):
         return loss, dep_loss, rel_loss, wrd_loss, dep_correct/dep_length, rel_correct/rel_length, wrd_correct/wrd_length
     
     def save(self, path):
+        """モデルの保存
+
+        Args:
+            path (str): 保存先パス
+        """
         model = self.model
         if hasattr(model, 'module'):
             model = self.model.module
@@ -323,6 +408,53 @@ class DependencyTrainer(Trainer):
 
 @Trainer.register("segmentation")
 class SegmentationTrainer(Trainer):
+    """文節・長単位境界と品詞を推定するモデル
+
+    Registrableで呼び出す際の名前は "segmentation"
+    基本的には短単位語を基準とする系列ラベリング器であるので、長単位語に限らず利用できる
+
+    Args:
+        train_files (Union[str, List[str]]): 
+            学習セットのファイルパス（複数可）学習には :py:class:`~monaka.dataset.LUWJsonLDataset` 準拠のJSON-Lデータである必要がある
+        dev_files (Union[str, List[str]]):
+            検証セットのファイルパス（複数可） :py:class:`~monaka.dataset.LUWJsonLDataset` 準拠のJSON-Lデータである必要がある
+        test_files (Optional[Union[str, List[str]]]): 
+            評価セットのファイルパス（複数可） :py:class:`~monaka.dataset.LUWJsonLDataset` 準拠のJSON-Lデータである必要がある
+        dataeset_options (Dict): 
+            :py:class:`~monaka.dataset.LUWJsonLDataset` に受け渡す設定データ
+        model_name (str):
+            用いるモデル名。:py:class:`~monaka.model.LUWParserModel` の派生クラスであり、:py:class:`~Registrable`の機能を使って、クラス定義時に付与されたモデル名を指定することができる。例： "WordTagging"
+        model_config (Dict): 
+            モデルに与える設定データ
+        batch_size (int, optional): 
+            バッチサイズ. Defaults to 8.
+        epochs (int, optional): 
+            エポック数. Defaults to 1.
+        lr (float, optional): 
+            学習率。最適化はAdamで固定。. Defaults to 2e-5.
+        mu (float, optional): 
+            Adamのmu. Defaults to .9.
+        nu (float, optional): 
+            Adamのnu. Defaults to .9.
+        epsilon (float, optional): 
+            Adamのepsilon. Defaults to 1e-12.
+        clip (float, optional): 
+            勾配クリッピング. Defaults to 5.0.
+        decay (float, optional): 
+            学習率減衰. Defaults to .75.
+        decay_steps (float, optional): 
+            学習率減衰の基準ステップ数. Defaults to 5000.
+        patience (float, optional): 
+            学習率減衰が始まるまでの最初のステップ数. Defaults to 100.
+        evaluate_step (int, optional): 
+            評価ステップ数。この数で割り切れる学習ステップ数時に評価を実行する. Defaults to 20.
+        verbose (bool, optional): 
+            デバッグ用の情報等を多く出力するようにするオプション. Defaults to True.
+        seed (int, optional): 
+            乱数シード値. Defaults to 419.
+        output_dir (str, optional): 
+            モデルの出力フォルダ. Defaults to "".
+    """
 
     def __init__(self,
             train_files: Union[str, List[str]],
@@ -430,6 +562,14 @@ class SegmentationTrainer(Trainer):
                              find_unused_parameters=True)
 
     def train(self, device: int=-1, local_rank: int=-1):
+        """学習実行
+
+        Args:
+            device (int, optional):
+                学習に使うGPU。負の値はCPU利用. Defaults to -1.
+            local_rank (int, optional):
+                複数GPU用のオプションだが現状は動作しない. Defaults to -1.
+        """
         init_device(str(device), local_rank)
         if dist.is_initialized():
             self.batch_size = self.batch_size // dist.get_world_size()
@@ -542,6 +682,16 @@ class SegmentationTrainer(Trainer):
         
     @torch.no_grad()
     def evaluate(self, dataloader, device):
+        """評価実行
+
+        Args:
+            dataloader (~torch.utils.data.DataLoader): 評価データを読み込んだデータローダ
+            device (int): 用いるGPU。trainと同様。
+
+        Returns:
+            tupple: 
+                (損失, 正解率)
+        """
         correct = 0
         length = 0
         loss = 0
@@ -566,228 +716,11 @@ class SegmentationTrainer(Trainer):
         return loss, correct/length
     
     def save(self, path):
-        model = self.model
-        if hasattr(model, 'module'):
-            model = self.model.module
-        state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
-        torch.save(state_dict, path)
+        """モデルの保存
 
-
-@Trainer.register("lemma")
-class LemmaTrainer(Trainer):
-
-    def __init__(self,
-            train_files: Union[str, List[str]],
-            dev_files: Union[str, List[str]],
-            test_files: Optional[Union[str, List[str]]],
-            dataeset_options: Dict,
-            model_name: str,
-            model_config: Dict,
-            batch_size: int=8,
-            epochs: int=1,
-            lr: float=2e-5,
-            mu: float=.9,
-            nu: float=.9,
-            epsilon: float=1e-12,
-            clip: float=5.0,
-            decay: float=.75,
-            decay_steps: float=5000,
-            patience: float=100,
-            evaluate_step:int =20,
-            verbose: bool=True,
-            seed: int = 419,
-            output_dir: str="",
-            **kwargs):
-        
-        global logger
-        os.makedirs(output_dir, exist_ok=True)
-
-        logger = get_logger(f"monaka.trainer.lemma.{output_dir.replace('/', '.')}")
-        init_logger(logger, handlers=[logging.StreamHandler(), logging.FileHandler(f"{output_dir}/train.lemma.log", 'w')], verbose=verbose)
-        self.output_dir = output_dir
-
-        logger.info("dataset options:")
-        logger.info(json.dumps(dataeset_options, indent=True, ensure_ascii=False))
-        options = {"logger": logger}
-        options.update(dataeset_options)
-        logger.info("loading train files")
-        self.train_data = LUWJsonLDataset(train_files, **options)
-
-        logger.info("loading dev files")
-        self.dev_data = LUWJsonLDataset(dev_files, **options)
-
-        logger.info("loading test files")
-        self.test_data = LUWJsonLDataset(test_files, **options) if test_files else None
-
-        self.batch_size=batch_size
-        self.epochs = epochs
-        self.lr = lr
-        self.mu = mu
-        self.nu = nu
-        self.epsilon = epsilon
-        self.clip = clip
-        self.decay = decay
-        self.decay_steps = decay_steps
-        self.patience = patience
-        self.verbose = verbose
-        self.evaluate_step = evaluate_step
-        self.model_name = model_name
-        conf = {
-            "batch_size": batch_size,
-            "epochs": epochs,
-            "mu": mu,
-            "nu": nu,
-            "epsilon": epsilon,
-            "clip": clip,
-            "decay": decay,
-            "decay_steps": decay_steps,
-            "patience": patience,
-            "verbose": verbose,
-            "evaluate_step": evaluate_step,
-            "seed": seed
-        }
-        torch_fix_seed(seed)
-        conf.update(kwargs)
-
-        logger.info("loading model")
-        self.model = LUWLemmaModel.by_name(model_name).from_config(model_config, **dataeset_options)
-        logger.info(str(self.model))
-        logger.info(json.dumps(model_config, indent=True, ensure_ascii=False))
-
-        logger.info("training setup:")
-        logger.info(json.dumps(conf, indent=True, ensure_ascii=False))
-
-        if dist.is_initialized():
-            logger.info("distributed mode ON")
-            self.model = DDP(self.model,
-                             device_ids=[dist.get_rank()],
-                             find_unused_parameters=True)
-            
-    @staticmethod
-    def batch_lemma_target(data: List[List[int]]):
-        prv = 0
-        res = []
-        #print(data)
-        for d in data:
-            l = [v + prv for v in d]
-            res.append(torch.tensor(l))
-            prv = max(l) + 1
-        return res
-
-    def train(self, device: int=-1, local_rank: int=-1):
-        init_device(str(device), local_rank)
-        if dist.is_initialized():
-            self.batch_size = self.batch_size // dist.get_world_size()
-        try:
-            device = int(device)
-            logger.info(f"device: {device}")
-        except:
-            logger.warn(f"device is not int: {device}")
-            pass
-        self.model.to(device)
-
-        optimizer = Adam(self.model.parameters(),
-                              self.lr,
-                              (self.mu, self.nu),
-                              self.epsilon)
-        scheduler = ExponentialLR(optimizer, self.decay**(1/self.decay_steps))
-        writer = SummaryWriter(log_dir=os.path.join(self.output_dir, "tb"))
-
-        train_loader = DataLoader(self.train_data, self.batch_size, shuffle=True, collate_fn=LUWJsonLDataset.collate_function)
-        dev_loader = DataLoader(self.dev_data, batch_size=1, shuffle=False, collate_fn=LUWJsonLDataset.collate_function)
-        test_loader = DataLoader(self.test_data, batch_size=1, shuffle=False, collate_fn=LUWJsonLDataset.collate_function) if self.test_data else None
-        metric = -1
-        total_itr = 0
-
-        for epoch in range(1, self.epochs + 1):
-            start = datetime.datetime.now()
-
-            logger.info(f"Epoch {epoch} / {self.epochs}:")
-
-            for i, data in tqdm.tqdm(enumerate(train_loader)):
-                subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=self.train_data.pad_token_id).to(device)
-                # lemma List[Tensor[lemma, subwords]]
-                l = list()
-                for d in data["lemma_ids"]:
-                    [l.append(v) for v in d]
-                label_ids = pad_sequence(l,  batch_first=True, padding_value=self.train_data.pad_token_id).to(device)
-                lemma_target = pad_sequence(self.batch_lemma_target(data["lemma_target"]), batch_first=True, padding_value=self.train_data.pad_token_id).to(device)
-                #label_ids = torch.flatten(label_ids, 0, 1) # batch, subwords
-                #print(label_ids.size())
-                mask = label_ids.ne(self.train_data.pad_token_id)
-
-                #print(subwords.size(), lemma_target.size())
-                out = self.model(subwords, lemma_target) # batch * luw, vocab size
-                loss = self.model.loss(out, label_ids, mask)
-                writer.add_scalar("Loss/train", loss, total_itr + i)
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
-                optimizer.step()
-                scheduler.step()
-                if (i+1) % self.evaluate_step == 0:
-                    dev_loss, dev_acc = self.evaluate(dev_loader, device)
-                    writer.add_scalar("Loss/dev", dev_loss, total_itr + i)
-                    writer.add_scalar("Acc/dev", dev_acc, total_itr + i)
-
-            total_itr += i
-            t = datetime.datetime.now() - start
-            logger.info("dev evaluation")
-            dev_loss, dev_acc = self.evaluate(dev_loader, device)
-            writer.add_scalar("Loss/dev", dev_loss, total_itr)
-            writer.add_scalar("Acc/dev", dev_acc, total_itr)
-
-            if dev_acc > metric:
-                logger.info("save best model")
-                self.save(os.path.join(self.output_dir, f"best_at_{epoch}.pt"))
-                metric = dev_acc
-
-            if test_loader:
-                logger.info("test evaluation")
-                test_loss, test_acc = self.evaluate(test_loader, device)
-                writer.add_scalar("Loss/test", test_loss, total_itr)
-                writer.add_scalar("Acc/test", test_acc, total_itr)
-            logger.info(f"{t}s elapsed\n")
-
-        self.save(os.path.join(self.output_dir, f"last_at_{epoch}.pt"))
-        
-        
-    @torch.no_grad()
-    def evaluate(self, dataloader, device):
-        correct = 0
-        length = 0
-        loss = 0
-        self.model.eval()
-        for data in dataloader:
-                subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=self.train_data.pad_token_id).to(device)
-                # lemma List[Tensor[lemma, subwords]]
-                l = list()
-                for d in data["lemma_ids"]:
-                    [l.append(v) for v in d]
-                label_ids = pad_sequence(l,  batch_first=True, padding_value=self.train_data.pad_token_id).to(device)
-                lemma_target = pad_sequence(self.batch_lemma_target(data["lemma_target"]), batch_first=True, padding_value=self.train_data.pad_token_id).to(device)
-                #label_ids = torch.flatten(label_ids, 0, 1) # batch, subwords
-                #print(label_ids.size())
-                mask = label_ids.ne(self.train_data.pad_token_id)
-
-                out = self.model(subwords, lemma_target) # batch * luw, vocab size
-                if out.size()[0] != label_ids.size()[0] or out.size()[1] < label_ids.size()[1]:
-                    logger.warn(f"eval: unmatch output and label size: {data['sentence']}, {out.size()}, {label_ids.size()}")
-                    continue
-                loss += self.model.loss(out, label_ids, mask).detach().cpu().item()
-                pred = torch.argmax(out, dim=-1)
-                lsize = label_ids.size()
-                #print(label_ids.size(), pred.size())
-                try:
-                    correct += ((pred[:lsize[0], :lsize[1]] == label_ids)).sum().detach().cpu().item()
-                    length += lsize[0] * lsize[1]
-                except Exception as e:
-                    logger.info(f"evaluation skipped: {data['sentence']}")
-                    raise e
-        logger.info(f"accuracy: {correct/length*100}, loss: {loss}")
-        self.model.train(True)
-        return loss, correct/length
-    
-    def save(self, path):
+        Args:
+            path (str): 保存先パス
+        """
         model = self.model
         if hasattr(model, 'module'):
             model = self.model.module
@@ -799,6 +732,41 @@ from transformers import Seq2SeqTrainingArguments, Seq2SeqTrainer as TTrainer, A
 
 @Trainer.register("lemma-decoder")
 class LemmaDeocderTrainer(Trainer):
+    """長単位語彙素の推定モデル
+    Registrableで呼び出す際の名前は "lemma-decoder"
+
+    Args:
+        train_files (Union[str, List[str]]): 
+            学習セットのファイルパス（複数可）学習には :py:class:`~monaka.dataset.LemmaJsonDataset` 準拠のJSON-Lデータである必要がある
+        dev_files (Union[str, List[str]]):
+            検証セットのファイルパス（複数可） :py:class:`~monaka.dataset.LemmaJsonDataset` 準拠のJSON-Lデータである必要がある
+        test_files (Optional[Union[str, List[str]]]): 
+            評価セットのファイルパス（複数可） :py:class:`~monaka.dataset.LemmaJsonDataset` 準拠のJSON-Lデータである必要がある
+        dataeset_options (Dict): 
+            :py:class:`~monaka.dataset.LemmaJsonDataset` に受け渡す設定データ
+        model_name (str):
+            用いるモデル名。:py:class:`~monaka.model.LUWParserModel` の派生クラスであり、:py:class:`~Registrable`の機能を使って、クラス定義時に付与されたモデル名を指定することができる。例： "WordTagging"
+        model_config (Dict): 
+            モデルに与える設定データ
+        batch_size (int, optional): 
+            バッチサイズ. Defaults to 8.
+        epochs (int, optional): 
+            エポック数. Defaults to 1.
+        steps (int, optional): _description_. 
+            学習ステップ数。 epochか、step数を指定する。 Defaults to 1.
+        lr (float, optional): 
+            学習率. Defaults to 2e-5.
+        decay (float, optional): 
+            学習減衰率. Defaults to .75.
+        evaluate_step (int, optional): 
+            評価ステップ数。この数で割り切れる学習ステップ数時に評価を実行する. Defaults to 20.
+        verbose (bool, optional): 
+            デバッグ用の情報等を多く出力するようにするオプション. Defaults to True.
+        seed (int, optional): 
+            乱数シード値. Defaults to 419.
+        output_dir (str, optional): 
+            モデルの出力フォルダ. Defaults to "".
+    """
 
     def __init__(self,
             train_files: Union[str, List[str]],
@@ -855,6 +823,15 @@ class LemmaDeocderTrainer(Trainer):
         self.tokenizer = self.train_dataset.tokenizer
 
     def compute_metrics(self, eval_preds):
+        """評価実行
+
+        Args:
+            eval_preds (Tupple[~torch.Tensor, ~torch.Tensor]): 
+            (生成モデルからの出力列, 正解ラベル)
+
+        Returns:
+            Dict: 正解率(accuracy), 予測値(preds), 正解(labels)を持つ辞書型データ
+        """
         preds, labels = eval_preds
         #preds_ = np.argmax(preds)
         preds_ = [np.argmax(prd, axis=-1) for prd in preds]
@@ -869,6 +846,14 @@ class LemmaDeocderTrainer(Trainer):
         return {"accuracy": len(correct) / len(decoded_preds), "preds": decoded_preds, "labels": decoded_labels}
     
     def train(self, device, local_rank):
+        """学習実行
+
+        Args:
+            device (int, optional):
+                学習に使うGPUなのだが、HuggingFaceのSeq2SeqTrainerを使うため、ここから指定できない。他との互換性のため. Defaults to -1.
+            local_rank (int, optional):
+                複数GPU用のオプションだが現状は動作しない. Defaults to -1.
+        """
         self.trainer.train()
         self.trainer.save_model(os.path.join(self.output_dir, "last-checkpoint"))
         if self.test_dataset:
@@ -878,5 +863,8 @@ class LemmaDeocderTrainer(Trainer):
                 json.dump(metrics, f, indent=True, ensure_ascii=False)
 
     @torch.no_grad()
-    def evaluate(self):
+    def evaluate(self, dataloader, device):
+        """評価実行
+        他との互換性のため記述しているが利用しない
+        """
         pass

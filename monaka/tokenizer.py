@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+"""入力を処理するトークナイザを定義するモジュール"""
 
 import torch
 import json
@@ -9,6 +10,14 @@ from transformers import BertTokenizerFast, AutoTokenizer
 
 
 class Tokenizer(Registrable):
+    """Monakaで扱うトークナイザの基底クラス
+
+    Args:
+        lm_tokenizer (Any):
+            トークナイザ本体
+        add_special_tokens (bool):
+            追加で特殊トークンを付与するか
+    """
 
     def __init__(self, lm_tokenizer, add_special_tokens=False) -> None:
         self.lm_tokenizer = lm_tokenizer
@@ -17,12 +26,33 @@ class Tokenizer(Registrable):
         super().__init__()
 
     def tokenize(self, words, max_length=None):
+        """入力をトークン化する
+
+        Args:
+            words (List[str]):
+                短単位語のリスト
+            max_length (int, optional): 
+                最大長. Defaults to None.
+
+        Returns:
+            Any: トークン列を含む出力結果
+        """
         tokens = self.lm_tokenizer(words, is_split_into_words=True, add_special_tokens=self.add_special_tokens, max_length=max_length, truncation=True)
         return tokens
     
 
 @Tokenizer.register("auto")
 class AutoLMTokenizer(Tokenizer):
+    """TransformersのAutoTokenizerで呼び出せるトークナイザー
+
+    :py:class:`~Registrable`で呼び出す際はauto
+
+    Args:
+        name (str):
+            トークナイザや言語モデルの名前
+        add_special_tokens (bool):
+            追加で特殊トークンを付与するか
+    """
     
     def __init__(self, name: str, add_special_tokens=False, **kwargs) -> None:
         lm_tokenizer = AutoTokenizer.from_pretrained(name)
@@ -34,6 +64,8 @@ try:
 
     from transformers.models.bert_japanese.tokenization_bert_japanese import MecabTokenizer
     class MecabPreTokenizer(MecabTokenizer):
+        """短単位語解析に事前にMeCabを使って解析するトークナイザ（ラッパー用）
+        """
 
         def mecab_split(self,i,normalized_string):
             t=str(normalized_string)
@@ -54,6 +86,8 @@ try:
 
 
     class BertMecabTokenizerFast(BertTokenizerFast):
+        """短単位語解析にMeCabを使って解析するトークナイザ（ラッパー）
+        """
 
         def __init__(self, vocab_file, do_lower_case=False, tokenize_chinese_chars=False, clean_up_tokenization_spaces=False, **kwargs):
             from tokenizers.pre_tokenizers import PreTokenizer,BertPreTokenizer,Sequence
@@ -64,6 +98,10 @@ try:
 
     @Tokenizer.register("bert-tohoku-ja")
     class BertMecabLMTokenizer(Tokenizer):
+        """東北大BERT用の専用トークナイザ
+
+        :py:class:`~Registrable`で呼び出す際は bert-tohoku-ja
+        """
 
         def __init__(self, **kwargs) -> None:
             lm_tokenizer = BertMecabTokenizerFast.from_pretrained("cl-tohoku/bert-base-japanese-whole-word-masking")
@@ -81,6 +119,10 @@ try:
 
     @Tokenizer.register("bert-tohoku-ja-unidic")
     class BertMecabLMTokenizer(Tokenizer):
+        """東北大BERT(Large V2)用の専用トークナイザ
+
+        :py:class:`~Registrable`で呼び出す際は bert-tohoku-ja-unidic
+        """
 
         def __init__(self, **kwargs) -> None:
             lm_tokenizer = BertMecabTokenizerUnidicFast.from_pretrained("tohoku-nlp/bert-large-japanese-v2")
@@ -103,6 +145,17 @@ class wdict(dict):
 
 @Tokenizer.register("word")
 class WordTokenizer(Tokenizer):
+    """通常の単語埋め込みを	HuggingFace Transformersのトークナイザと同じ様に見せるトークナイザ
+    
+    :py:class:`~Registrable`で呼び出す際は word
+
+    Args:
+        pad_token (str): [PAD]トークンの文字列
+        unk_token (str): [UNK]トークンの文字列
+        token_dict (str): 辞書ファイル(JSON)へのパス
+        add_special_tokens (bool):
+            追加で特殊トークンを付与するか
+    """
 
     def __init__(self, pad_token, unk_token, token_dict, add_special_tokens=False):
         with open(token_dict) as f:

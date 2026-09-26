@@ -16,10 +16,6 @@ from transformers import AutoModel, AutoConfig, T5EncoderModel
 class LMEmbedding(nn.Module, Registrable):
     """言語モデルで用いる埋め込みのための基底クラス
 
-    基底クラス:
-        torch.nn.Module: Pytorchのモジュール基底クラス
-        Registrable: Registrable基底クラス。テキストで付与された名前でモジュールを呼び出すことができる。
-
     Arrtributes:
         n_out (int): 出力の次元数
         n_vocab (int): 語彙の語数
@@ -45,7 +41,7 @@ class LMEmbedding(nn.Module, Registrable):
             config (Dict): JSON形式のコンフィグ
 
         Returns:
-            monaka.module.LMEmbedding: 生成されたクラス
+            ~monaka.module.LMEmbedding: 生成されたクラス
         """
         return cls(**config)
    
@@ -75,6 +71,7 @@ class FixedEmbedding(LMEmbedding):
 class AutoLMEmebedding(LMEmbedding):
     """
     TransformersのAutoConfigとAutoModelを利用するEmbedding
+    :py:class:`~Registrable` で呼び出す際はは"AutoLM"
 
     基底クラス:
         LMEmbedding: 言語モデルで用いる埋め込みのための基底クラス
@@ -167,6 +164,8 @@ class AutoLMEmebedding(LMEmbedding):
 class T5EncoderEmbedding(AutoLMEmebedding):
     """
     T5Encoderを利用するEmbedding
+    
+    :py:class:`~Registrable` で呼び出す場合は"T5Encoder"
 
     基底クラス:
         AutoLMEmebedding: TransformersのAutoConfigとAutoModelを利用するEmbedding
@@ -396,6 +395,7 @@ class PositionalEncoding(nn.Module):
     """PositionEncoding: 位置エンコーディング
 
     Transformerで失われる位置情報を埋め込みとして表現する
+
     Args:
         d_model (int):
             位置エンコーディングの次元数

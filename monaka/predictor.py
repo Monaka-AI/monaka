@@ -1,4 +1,15 @@
 # -*- coding: utf-8 -*-
+"""解析や解析結果の処理に関するコード群
+
+Encoder:
+    解析結果を所望のフォーマットに変更するコード群
+
+Decoder:
+    入力データを使用可能なデータに変換するコード群
+
+Predictor:
+    深層学習の推論処理に関するクラス群
+"""
 
 import os
 import io
@@ -30,9 +41,9 @@ BASE_DIR = os.path.abspath(os.path.dirname(__file__)) # monaka dir
 RESC_DIR = os.path.join(BASE_DIR, "resource") # monaka/resource dir
 
 
-
-
 class Decoder(Registrable):
+    """入力データを使用可能なデータに変換するコードの基底クラス
+    """
 
     def __init__(self) -> None:
         super().__init__()
@@ -50,19 +61,32 @@ class Decoder(Registrable):
         return "-".join(pos)
     
     def decode(self, tokens: List[str], pos: List[str], labels: List[str], **kwargs) -> Dict:
-        """
-        出力は辞書形式 LUWは開始位置の場合はPOS-tag名、そうでない場合は"*"。文節は開始位置は"B"そうでなければ"I"。
-        解析対象のfieldを含んでいれば良い。
-        kwargsにメタ情報を追記でき、それらを辞書に加えることを想定している
-        {
-            "luw": ["POS-tag or *"]
-            "chunk": ["B", "I"]
-        }
+        """入力データを使用可能なデータに変換する処理
+        
+        Args:
+            tokens (List[str]):
+                短単位語の列
+            pos (List[str]):
+                短単位の品詞の列
+            labels (List[str]):
+                推論対象のラベルの列（1短単位あたり1ラベル）
+        Returns:
+            Dict 出力は辞書形式 LUWは開始位置の場合はPOS-tag名、そうでない場合は"*"。文節は開始位置は"B"そうでなければ"I"。
+                解析対象のfieldを含んでいれば良い。
+                kwargsにメタ情報を追記でき、それらを辞書に加えることを想定している:
+
+                    {
+                        "luw": ["POS-tag or *"],
+            
+                        "chunk": ["B", "I"]
+                    }
         """
         raise NotImplementedError
 
 
 class DepDecoder(Registrable):
+    """係り受け解析の入力データを使用可能なデータに変換するコードの基底クラス
+    """
 
     def __init__(self) -> None:
         super().__init__()
@@ -73,20 +97,25 @@ class DepDecoder(Registrable):
 
     
     def decode(self, sent: str, **kwargs) -> Dict:
-        """
-        出力は辞書形式 LUWは開始位置の場合はPOS-tag名、そうでない場合は"*"。文節は開始位置は"B"そうでなければ"I"。
-        解析対象のfieldを含んでいれば良い。
-        kwargsにメタ情報を追記でき、それらを辞書に加えることを想定している
-        {
-            "luw": ["POS-tag or *"]
-            "chunk": ["B", "I"]
-        }
+        """入力データを使用可能なデータに変換する処理
+       
+        Args:
+            sent (str):
+                入力1行のテキスト
+
+        Returns:
+            Dict:
+                :py:class:`~monaka.dataset.ChunkDepJsonLDataset` 準拠のデータ
         """
         raise NotImplementedError
 
 
 @DepDecoder.register("jsonl")
 class DepJsonL(DepDecoder):
+    """係り受け解析用のJSON-L データをモデル入力用に変換するコード
+
+    :py:class:`~Registrable`で呼び出す際は"jsonl"
+    """
 
     def decode(self, sent, **kwargs):
         return json.loads(sent)
@@ -94,9 +123,21 @@ class DepJsonL(DepDecoder):
 
 @Decoder.register("LUW-Bunsetsu")
 class LUWChunkDecoder(Decoder):
+    """長単位品詞・境界と文節境界をすべて一つのラベルにする方式
+
+    :py:class:`~Registrable`で呼び出す際は"LUW-Bunsetsu"
+    """
 
     @staticmethod
-    def is_space(luw_pos: str):
+    def is_space(luw_pos: str) -> bool:
+        """空白の判定
+
+        Args:
+            luw_pos (str): 長単位品詞
+
+        Returns:
+            bool: 空白である(True)
+        """
         if luw_pos.startswith("補助記号"):
             return True
         elif luw_pos.startswith("空白"):
@@ -104,7 +145,15 @@ class LUWChunkDecoder(Decoder):
         return False
     
     @staticmethod
-    def is_passthrough(pos: str):
+    def is_passthrough(pos: str) -> bool:
+        """そのまま出力するか
+
+        Args:
+            pos (str): 短単位品詞
+
+        Returns:
+            bool: そのまま出力(True)
+        """
         if '漢文' in pos:
             return True
         return False
@@ -113,6 +162,21 @@ class LUWChunkDecoder(Decoder):
         """
         labelsが以下の形式の場合に利用する
         (B or I)(B or I)(LUW品詞)
+
+        Args:
+            tokens (List[str]):
+                短単位語の列
+            pos (List[str]):
+                短単位の品詞の列
+            labels (List[str]):
+                推論対象のラベルの列（1短単位あたり1ラベル）
+            pos_level (int):
+                推論する長単位品詞の階層 名詞-固有名詞-人名 の様な場合は3階層ある
+
+        Returns:
+            Dict:
+                :py:class:`~monaka.dataset.LUWJsonLDataset` で読み込めるデータ形式に変換
+                
         """
         luw = list()
         chunk = list()
@@ -159,11 +223,29 @@ class LUWChunkDecoder(Decoder):
 
 @Decoder.register("comainu")
 class ComainuDecoder(Decoder):
+    """Comainu準拠のラベルにする方式
+
+    :py:class:`~Registrable`で呼び出す際は"comainu"
+    """
 
     def decode(self, tokens: List[str], pos: List[str], labels: List[str], pos_level:int = -1, **kwargs) -> Dict:
         """
         labelsが以下の形式の場合に利用する Comainu方式
         (B or I)(B or I)(a)
+
+        Args:
+            tokens (List[str]):
+                短単位語の列
+            pos (List[str]):
+                短単位の品詞の列
+            labels (List[str]):
+                推論対象のラベルの列（1短単位あたり1ラベル）
+            pos_level (int):
+                推論する長単位品詞の階層 名詞-固有名詞-人名 の様な場合は3階層ある
+
+        Returns:
+            Dict:
+                :py:class:`~monaka.dataset.LUWJsonLDataset` で読み込めるデータ形式に変換
         """
         luw = list()
         chunk = list()
@@ -195,6 +277,8 @@ class ComainuDecoder(Decoder):
 
 
 class Encoder(Registrable):
+    """解析結果を所望のフォーマットに変更するコード
+    """
 
     def __init__(self, **kwargs) -> None:
         super().__init__()
@@ -204,12 +288,23 @@ class Encoder(Registrable):
 
     def encode(self, tokens: List[str], pos: List[str], **kwargs) -> Any:
         """
-        Decoderが出力する形式を受け取って、所望の出力形式に変換する
+        モデルが出力する形式を受け取って、所望の出力形式に変換する
+
+        Args:
+            tokens (List[str]):
+                短単位語の列
+            pos (List[str]):
+                短単位の品詞の列
+
+        Returns:
+            Any: 変換結果
         """
         raise NotImplementedError
     
 
 class DepEncoder(Registrable):
+    """係り受け解析結果を所望のフォーマットに変更するコード
+    """
 
     def __init__(self, **kwargs) -> None:
         super().__init__()
@@ -219,13 +314,25 @@ class DepEncoder(Registrable):
 
     def encode(self, original: Dict, **kwargs) -> Any:
         """
-        Decoderが出力する形式を受け取って、所望の出力形式に変換する
+        モデルが出力する形式を受け取って、所望の出力形式に変換する
+
+        Args:
+            original (Dict):
+                モデル推論結果の辞書データ
+
+        Returns:
+            Any:
+                変換後の形式
         """
         raise NotImplementedError
 
 
 @DepEncoder.register("jsonl")
 class DepPathThrough(DepEncoder):
+    """そのまま(JSON-L)で出力する係り受け解析用のデコーダ
+
+    :py:class:`~Registrable`で呼び出す際は"jsonl"
+    """
 
     def encode(self, original, **kwargs):
         return json.dumps(original, ensure_ascii=False)
@@ -233,8 +340,23 @@ class DepPathThrough(DepEncoder):
 
 @DepEncoder.register("ud")
 class UDDepEncoder(DepEncoder):
+    """UD形式に変換する係り受け解析用のデコーダ
 
-    def encode(self, original, **kwargs):
+    :py:class:`~Registrable`で呼び出す際は"ud"
+    """
+
+    def encode(self, original, **kwargs) -> str:
+        """
+        モデルが出力する形式を受け取って、UD形式(conllu形式)に変換する
+
+        Args:
+            original (Dict):
+                モデル推論結果の辞書データ
+
+        Returns:
+            str:
+                UD形式のテキスト
+        """
         if 'lemma' not in original or original['lemma'][0] == '_':
             original['lemma'] = original['tokens']
 
@@ -302,8 +424,23 @@ class UDDepEncoder(DepEncoder):
 
 @DepEncoder.register("cabocha")
 class CabochaDepEncoder(DepEncoder):
+    """CaboCha形式に変換する係り受け解析用のデコーダ
+
+    :py:class:`~Registrable`で呼び出す際は"cabocha"
+    """
 
     def encode(self, original, **kwargs):
+        """
+        モデルが出力する形式を受け取って、CaboCha形式に変換する
+
+        Args:
+            original (Dict):
+                モデル推論結果の辞書データ
+
+        Returns:
+            str:
+                CaboCha形式のテキスト
+        """
         
         pbid = -1
         out = list()
@@ -322,7 +459,20 @@ class CabochaDepEncoder(DepEncoder):
         return '\n'.join(out)
             
 
-def append_spans(data):
+def append_spans(data: Dict) -> Dict:
+    """スパン情報を付与する
+
+    Args:
+        data (Dict): 入力データの1レコード
+
+    Returns:
+        Dict: 
+            入力データに以下を追加して返す:
+                短単位スパン(suw_span): (begin, end)のリスト
+                長単位スパン(luw_span): (begin, end)のリスト
+                文節のスパン(chunk_span): (begin, end)のリスト
+                長単位のトリプル(luw_triples): (begin, end, 品詞)のリスト
+    """
     start = 0
     data["suw_span"] = []
     for token in data["tokens"]:
@@ -371,8 +521,24 @@ def append_spans(data):
 
 @Encoder.register("jsonl")
 class PassThrough(Encoder):
+    """そのまま(JSON-L)で出力するデコーダ
 
-    def encode(self, tokens: List[str], pos: List[str], **kwargs) -> Any:
+    :py:class:`~Registrable`で呼び出す際は"jsonl"
+    """
+
+    def encode(self, tokens: List[str], pos: List[str], **kwargs) -> str:
+        """
+        モデルが出力する形式を受け取って、そのままJSON-L形式に変換する
+
+        Args:
+            tokens (List[str]):
+                短単位語の列
+            pos (List[str]):
+                短単位の品詞の列
+
+        Returns:
+            str: 変換結果のJSON(1行)
+        """
         r = {"tokens": tokens, "pos": pos}
         r.update(kwargs)
         append_spans(r)
@@ -381,8 +547,26 @@ class PassThrough(Encoder):
 
 @Encoder.register("bunsetsu-split")
 class BunsetsuSplitter(Encoder):
+    """文節区切りをするデコーダ
 
-    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], **kwargs) -> Any:
+    :py:class:`~Registrable`で呼び出す際は"bunsetsu-split"
+    """
+
+    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], **kwargs) -> str:
+        """
+        モデルが出力する形式を受け取って、文節区切りのテキストに変換する
+
+        Args:
+            tokens (List[str]):
+                短単位語の列
+            pos (List[str]):
+                短単位の品詞の列
+            chunk (List[str]):
+                文節のBIタグのリスト
+
+        Returns:
+            str: 文節区切りのテキスト
+        """
         c_tokens = list()
         prv = ""
         for token, c in zip(tokens, chunk):
@@ -401,8 +585,26 @@ class BunsetsuSplitter(Encoder):
 
 @Encoder.register("csv")
 class CSVEncoder(Encoder):
+    """CSV出力デコーダ
 
-    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], features: List[List[str]], **kwargs) -> Any:
+    :py:class:`~Registrable`で呼び出す際は"csv"
+    """
+
+    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], features: List[List[str]], **kwargs) -> str:
+        """
+        モデルが出力する形式を受け取って、CSVテキストに変換する
+
+        Args:
+            tokens (List[str]):
+                短単位語の列
+            pos (List[str]):
+                短単位の品詞の列
+            chunk (List[str]):
+                文節のBIタグのリスト
+
+        Returns:
+            str: 短単位, 品詞, X, 長単位境界, 文節境界
+        """
         output = io.StringIO()
         writer = csv.writer(output)
         if "luw" in kwargs:
@@ -417,6 +619,22 @@ class CSVEncoder(Encoder):
     
 @Encoder.register("mecab")
 class MeCabEncoder(Encoder):
+    """MeCab準拠のデコーダ
+
+    :py:class:`~Registrable`で呼び出す際は"mecab"
+
+    Args:
+        node_format (str, optional): 
+            短単位レベルの出力のフォーマット文. Defaults to '%m\t%f[9]\t%f[6]\t%f[7]\t%F-[0,1,2,3]\t%f[4]\t%f[5]\t%f[13]\t%f[27]\t%f[28]\n'.
+        bos_format (str, optional): 
+            文頭に付与する表現. Defaults to ''.
+        eos_format (str, optional): 
+            文末に付与する表現. Defaults to '\n'.
+        unk_format (str, optional): 
+            未知語のフォーマット文. Defaults to '%m\t%m\t%m\t%m\tUNK\t%f[4]\t%f[5]\t\n'.
+        eon_format (str, optional): 
+            トークン終わりに付与する表現. Defaults to ''.
+    """
     
     def __init__(self, node_format: str='%m\t%f[9]\t%f[6]\t%f[7]\t%F-[0,1,2,3]\t%f[4]\t%f[5]\t%f[13]\t%f[27]\t%f[28]\n', bos_format: str='', eos_format: str='\n', unk_format: str='%m\t%m\t%m\t%m\tUNK\t%f[4]\t%f[5]\t\n', eon_format: str='', **kwargs) -> None:
         super().__init__(**kwargs)
@@ -432,6 +650,14 @@ class MeCabEncoder(Encoder):
 
     @staticmethod
     def is_yougen(pos: str) -> bool:
+        """用言であるかを判定する
+
+        Args:
+            pos (str): 短単位品詞
+
+        Returns:
+            bool: 用言である(True)
+        """
         if '動詞' in pos: #動詞 助動詞
             return True
         if '形容詞' in pos:
@@ -442,50 +668,92 @@ class MeCabEncoder(Encoder):
     
     def format(self, fstring: str, sentence: str, m_type, token: str, p, l, c, feat: List[str], start: int)-> str:
         """
-        format like mecab
+        フォーマットは以下
 
-        %s	形態素種類 (0: 通常, 1: 未知語, 2:文頭, 3:文末)
-        %S	入力文
-        %L	入力文の長さ
-        %m	形態素の表層文字列
-        %M	形態素の表層文字列, ただし空白文字も含めて出力 (%pS を参照のこと)
-        %h	素性の内部 ID
-        %%	% そのもの
-        %c	単語生起コスト
-        %H	素性 (品詞, 活用, 読み) 等を CSV で表現したもの
-        %t	文字種 id
-        %P	周辺確率 (-l2 オプションを指定したときのみ有効)
-        %pi	形態素に付与されるユニークなID
-        %pS	もし形態素が空白文字列で始まる場合は, その空白文字列を表示 %pS%m と %M は同一
-        %ps	開始位置
-        %pe	終了位置
-        %pC	1つ前の形態素との連接コスト
-        %pw	%c と同じ
-        %pc	連接コスト + 単語生起コスト (文頭から累積)
-        %pn	連接コスト + 単語生起コスト (その形態素単独, %pw + %pC)
-        %pb	最適パスの場合 *, それ以外は ' '
-        %pP	周辺確率 (-l2 オプションを指定したときのみ有効)
-        %pA	blpha, forward log 確率 (-l2 オプションを指定したときのみ有効)
-        %pB	beta, backward log 確率 (-l2 オプションを指定したときのみ有効)
-        %pl	形態素の表層文字列としての長さ, strlen (%m) と同一
-        %pL	形態素の表層文字列としての長さ, ただし空白文字列も含む, strlen(%M) と同一
-        %phl	左文脈 id
-        %phr	右文脈 id
-        %b  文節情報
-        %l  長単位境界
-        %lP 長単位品詞
-        %lO 長単位OrthToken
-        %lR 長単位読み
-        %lT 長単位活用型
-        %lF 長単位活用形
-        %lL 長単位語彙素
-        %f[N]	csv で表記された素性の N番目の要素
-        %f[N1,N2,N3...]	N1,N2,N3番目の素性を, "," を デリミタとして表示
-        %FC[N1,N2,N3...]	N1,N2,N3番目の素性を, C を デリミタとして表示.
-        ただし, 要素が 空の場合は以降表示が省略される. (例)F-[0,1,2]
-        \0 \a \b \t \n \v \f \r \\	通常の エスケープ文字列
-        \s	' ' (半角スペース)
-        設定ファイルに記述するときに使用
+        Examples:
+            %s	形態素種類 (0: 通常, 1: 未知語, 2:文頭, 3:文末)
+
+            %S	入力文
+
+            %L	入力文の長さ
+
+            %m	形態素の表層文字列
+
+            %M	形態素の表層文字列, ただし空白文字も含めて出力 (%pS を参照のこと)
+
+            %h	素性の内部 ID
+
+            %%	% そのもの
+
+            %c	単語生起コスト
+
+            %H	素性 (品詞, 活用, 読み) 等を CSV で表現したもの
+
+            %t	文字種 id
+
+            %P	周辺確率 (-l2 オプションを指定したときのみ有効)
+
+            %pi	形態素に付与されるユニークなID
+
+            %pS	もし形態素が空白文字列で始まる場合は, その空白文字列を表示 %pS%m と %M は同一
+
+            %ps	開始位置
+
+            %pe	終了位置
+
+            %pC	1つ前の形態素との連接コスト
+
+            %pw	%c と同じ
+
+            %pc	連接コスト + 単語生起コスト (文頭から累積)
+
+            %pn	連接コスト + 単語生起コスト (その形態素単独, %pw + %pC)
+
+            %pb	最適パスの場合 *, それ以外は ' '
+
+            %pP	周辺確率 (-l2 オプションを指定したときのみ有効)
+
+            %pA	blpha, forward log 確率 (-l2 オプションを指定したときのみ有効)
+
+            %pB	beta, backward log 確率 (-l2 オプションを指定したときのみ有効)
+
+            %pl	形態素の表層文字列としての長さ, strlen (%m) と同一
+
+            %pL	形態素の表層文字列としての長さ, ただし空白文字列も含む, strlen(%M) と同一
+
+            %phl	左文脈 id
+
+            %phr	右文脈 id
+
+            %b  文節情報
+
+            %l  長単位境界
+
+            %lP 長単位品詞
+
+            %lO 長単位OrthToken
+
+            %lR 長単位読み
+
+            %lT 長単位活用型
+
+            %lF 長単位活用形
+
+            %lL 長単位語彙素
+
+            %f[N]	csv で表記された素性の N番目の要素
+
+            %f[N1,N2,N3...]	N1,N2,N3番目の素性を, "," を デリミタとして表示
+
+            %FC[N1,N2,N3...]	N1,N2,N3番目の素性を, C を デリミタとして表示.
+
+            ただし, 要素が 空の場合は以降表示が省略される. (例)F-[0,1,2]
+
+            "¥0 ¥a ¥b ¥t ¥n ¥v ¥f ¥r ¥¥"	通常の エスケープ文字列
+
+            "¥s"	' ' (半角スペース)
+
+            設定ファイルに記述するときに使用
         """
         f = list()
         f.extend(feat)
@@ -558,7 +826,23 @@ class MeCabEncoder(Encoder):
 
         return output
 
-    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], features: List[List[str]], **kwargs) -> Any:
+    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], features: List[List[str]], **kwargs) -> str:
+        """
+        モデルが出力する形式を受け取って、MeCabの形式で出力する
+
+        Args:
+            tokens (List[str]):
+                短単位語の列
+            pos (List[str]):
+                短単位の品詞の列
+            chunk (List[str]):
+                文節のBIタグのリスト
+            features (List[List[str]]):
+                辞書のフィールドデータ
+
+        Returns:
+            str: MeCab準拠のテキスト
+        """
         output = ''
         if "luw" in kwargs:
             lpos = kwargs["luw"]
@@ -642,8 +926,28 @@ class MeCabEncoder(Encoder):
     
 @Encoder.register("cabocha")
 class CaboChaEncoder(Encoder):
+    """CaboCha形式に変換するデコーダ
 
-    def encode(self, tokens: List[str], pos: List[str], chunk: List[str],  features: List[List[str]], **kwargs) -> Any:
+    :py:class:`~Registrable`で呼び出す際は"cabocha"
+    """
+
+    def encode(self, tokens: List[str], pos: List[str], chunk: List[str],  features: List[List[str]], **kwargs) -> str:
+        """
+        モデルが出力する形式を受け取って、長単位区切りのテキストに変換する
+
+        Args:
+            tokens (List[str]):
+                短単位語の列
+            pos (List[str]):
+                短単位の品詞の列
+            chunk (List[str]):
+                文節のBIタグのリスト
+            features (List[List[str]]):
+                辞書のフィールドデータ
+
+        Returns:
+            str: CaboCha形式のテキスト
+        """
 
         if "luw" in kwargs:
             lpos = kwargs["luw"]
@@ -709,8 +1013,26 @@ class CaboChaEncoder(Encoder):
 
 @Encoder.register("luw-split")
 class LUWSplitter(Encoder):
+    """長単位区切りをするデコーダ
 
-    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], **kwargs) -> Any:
+    :py:class:`~Registrable`で呼び出す際は"luw-split"
+    """
+
+    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], **kwargs) -> str:
+        """
+        モデルが出力する形式を受け取って、長単位区切りのテキストに変換する
+
+        Args:
+            tokens (List[str]):
+                短単位語の列
+            pos (List[str]):
+                短単位の品詞の列
+            chunk (List[str]):
+                文節のBIタグのリスト
+
+        Returns:
+            str: 長単位区切りのテキスト
+        """
         c_tokens = list()
         prv = ""
         if "luw" in kwargs:
@@ -773,9 +1095,18 @@ class BCCWJComainu(Encoder):
         "MID",
         "m"
     ]
+    """出力のTSVの列の順"""
 
     @staticmethod
     def is_yougen(pos: str) -> bool:
+        """用言であるかを判定する
+
+        Args:
+            pos (str): 短単位品詞
+
+        Returns:
+            bool: 用言である(True)
+        """
         if '動詞' in pos: #動詞 助動詞
             return True
         if '形容詞' in pos:
@@ -784,7 +1115,21 @@ class BCCWJComainu(Encoder):
             return True
         return False
     
-    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], **kwargs) -> Any:
+    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], **kwargs) -> str:
+        """
+        モデルが出力する形式を受け取って、BCCWJの形式で出力する
+
+        Args:
+            tokens (List[str]):
+                短単位語の列
+            pos (List[str]):
+                短単位の品詞の列
+            chunk (List[str]):
+                文節のBIタグのリスト
+
+        Returns:
+            str: TSV形式のテキスト
+        """
         if "luw" in kwargs:
             lpos = kwargs["luw"]
         else:
@@ -834,6 +1179,9 @@ class BCCWJComainu(Encoder):
 
 @Encoder.register("bcpexport")
 class BCPExport(Encoder):
+    """BCCWJ2の開発のための入出力フォーマットに準拠した出力
+    
+    """
     FIELDS = [
         "corpusName(S)",
         "file(S)",
@@ -904,9 +1252,18 @@ class BCPExport(Encoder):
         "pStart(L)",
         "rn"
     ]
+    """出力のTSVの列の順"""
 
     @staticmethod
     def is_yougen(pos: str) -> bool:
+        """用言であるかを判定する
+
+        Args:
+            pos (str): 短単位品詞
+
+        Returns:
+            bool: 用言である(True)
+        """
         if '動詞' in pos: #動詞 助動詞
             return True
         if '形容詞' in pos:
@@ -915,7 +1272,21 @@ class BCPExport(Encoder):
             return True
         return False
 
-    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], **kwargs) -> Any:
+    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], **kwargs) -> str:
+        """
+        モデルが出力する形式を受け取って、BCCWJ2の形式で出力する
+
+        Args:
+            tokens (List[str]):
+                短単位語の列
+            pos (List[str]):
+                短単位の品詞の列
+            chunk (List[str]):
+                文節のBIタグのリスト
+
+        Returns:
+            str: TSV形式のテキスト
+        """
         if "luw" in kwargs:
             lpos = kwargs["luw"]
         else:
@@ -961,14 +1332,6 @@ class BCPExport(Encoder):
             outs.append(out)
             count += 1
         return "\n".join(['\t'.join(o) for o in outs])
-
-    
-
-@Encoder.register("mrp")
-class MRPformatter(Encoder):
-
-    def encode(self, tokens: List[str], pos: List[str], chunk: List[str], **kwargs) -> Any:
-        pass
 
 
 class SUWTokenizer(Registrable):
@@ -1028,6 +1391,11 @@ class MecabSUWTokenizer(SUWTokenizer):
 
 
 class Predictor:
+    """長単位品詞・境界と文節境界のための推論器
+
+    Args:
+        model_dir (str): 学習済みモデルのあるフォルダへのパス
+    """
 
     def __init__(self, model_dir: str) -> None:
         self.model_dir = model_dir
@@ -1057,6 +1425,14 @@ class Predictor:
 
     @staticmethod
     def find_best_pt(model_dir: str) -> str:
+        """ベストデータポイントを探す
+
+        Args:
+            model_dir (str): 学習済みモデルのあるフォルダへのパス
+
+        Returns:
+            str: ベストモデルポイントへのパス
+        """
         candidates = list()
         longest = -1
         idx = -1
@@ -1072,6 +1448,15 @@ class Predictor:
         return candidates[idx]
     
     def extract_labels(self, word_ids, labels):
+        """テキストラベルからIDに変換
+
+        Args:
+            word_ids (List[int]): None出ない場合は、サブワードに対応する短単位語の文頭からの番号
+            labels (List[str]): テキストラベル列 
+
+        Returns:
+            List[int]: テキストラベルに対応するIDの列
+        """
         res = list()
         if word_ids is None:
             return [self.inv_label_dic.get(l, "unk") for l in labels]
@@ -1085,6 +1470,27 @@ class Predictor:
         return res
 
     def predict(self, input: List[str], suw_tokenizer: str, suw_tokenizer_option: dict, encoder_name: str, batch_size: int = 8, device: str="cpu", **kwargs):
+        """モデル推論の実行
+
+        Args:
+            input (List[str]): 
+                文のリスト(複数文を処理する)
+            suw_tokenizer (str): 
+                短単位語解析をするトークナイザ :py:class:`~monaka.tokenizer.Tokenizer` のサブクラス名。Registrableで付けた名前を利用する。
+                
+                例: :py:class:`~monaka.tokenizer.AutoLMTakenizer` の場合は、"auto"
+            suw_tokenizer_option (dict):
+                トークナイザの初期化に必要な引数。用いるTokenizerの引数を参照して設定。
+            encoder_name (str): 
+                出力先のフォーマットを指定する :py:class:`~monaka.predictor.Encoder` のサブクラス名。Registrableで付けた名前を利用する。
+            batch_size (int, optional): 
+                バッチ数. Defaults to 8.
+            device (str, optional): 
+                用いるGPU番号か"cpu"を指定. Defaults to "cpu".
+
+        Yields:
+            Any: 指定した :py:class:`~monaka.predictor.Encoder` が出力する結果
+        """
         encoder = Encoder.by_name(encoder_name)(**kwargs)
         tokenizer = SUWTokenizer.by_name(suw_tokenizer)(**suw_tokenizer_option)
 
@@ -1102,34 +1508,71 @@ class Predictor:
             pass
         self.model.to(device)
 
+        with torch.no_grad():
+            for data in dataloader:
+                #word_ids = [sbw.word_ids() for sbw in data["subwords"]]
+                subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(device)
+                word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(device)
+                pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(device) if "pos_ids" in data else None
 
-        for data in dataloader:
-            #word_ids = [sbw.word_ids() for sbw in data["subwords"]]
-            subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(device)
-            word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(device)
-            pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(device) if "pos_ids" in data else None
-            lemma_ids = pad_sequence(data["lemma_ids"], batch_first=True, padding_value=self.train_data.pad_token_id).to(device) if "lemma_ids" in data else None
-            lemma_word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["lemma_subwords"]], batch_first=True, padding_value=-1).to(device) if "lemma_ids" in data else None
+                out = self.model(subwords, word_ids, pos_ids)
+                pred = torch.argmax(out, dim=-1) # batch, len, 
+                tops = torch.topk(out, len(self.label_dic), dim=-1)
 
-            out = self.model(subwords, word_ids, pos_ids)
-            pred = torch.argmax(out, dim=-1) # batch, len, 
-
-            pred_np = pred.detach().cpu().numpy()
-            for prd, wids, sentence, tokens, pos, feat, skip in zip(pred_np, word_ids, data["sentence"], data["tokens"], data["pos"], data["features"], data["skip"]):
-                if not skip:
+                pred_np = pred.detach().cpu().numpy()
+                tops_np = tops.indices.detach().cpu().numpy()
+                prv_tokens = None
+                prv_pos = None
+                prv_labels = None
+                for prd, wids, sentence, tokens, pos, meta, fold, top in zip(pred_np, word_ids, data["sentence"], data["tokens"], data["pos"], data.get("features", {}), data["fold"], tops_np):
                     if not dataset.label_for_all_subwords:
                         labels = self.extract_labels(None, prd)
                     else:
                         labels = self.extract_labels(wids, prd)
-                    res = self.decoder.decode(tokens, pos, labels)
-                else:
-                    res = self.decoder.decode(tokens, pos, ['BB*' for _ in tokens])
-                res["sentence"] = sentence
-                res["features"] = feat
-                yield encoder.encode(**res)
+                    if fold < 0:
+                        res = self.decoder.decode(tokens, pos, labels)
+                        res = self.apply_single_suw_rule(res, top)
+                        res["sentence"] = sentence
+                        res["features"] = meta
+                        res["meta"] = meta
+                        out = encoder.encode(**res)
+                        yield out
+                    elif fold == 0:
+                        logger.warning(f"fold: 0 {''.join(tokens)}")
+                        prv_tokens = tokens
+                        prv_pos = pos
+                        prv_labels = labels
+                    else: #fold == 1
+                        logger.warning(f"fold: 1 {''.join(tokens)}")
+                        prv_tokens.extend(tokens)
+                        prv_pos.extend(pos)
+                        prv_labels.extend(labels)
+                        logger.warning(f"unfolding {''.join(prv_tokens)}")
+                        res = self.decoder.decode(prv_tokens, prv_pos, prv_labels)
+                        res = self.apply_single_suw_rule(res, top)
+                        res["sentence"] = sentence
+                        res["features"] = meta
+                        res["meta"] = meta
+                        out = encoder.encode(**res)
+                        yield out
+
 
     def predict_raw(self, input: str, encoder_name: str, batch_size: int = 8, device: str="cpu"):
-        #print(input, file=sys.stderr)
+        """モデル推論の実行（短単位解析なし）
+
+        Args:
+            input (str): 
+                :py:class:`~monaka.dataset.LUWJsonLDataset` が読み取れるJSONテキスト
+            encoder_name (str): 
+                出力先のフォーマットを指定する :py:class:`~monaka.predictor.Encoder` のサブクラス名。Registrableで付けた名前を利用する。
+            batch_size (int, optional): 
+                バッチ数. Defaults to 8.
+            device (str, optional): 
+                用いるGPU番号か"cpu"を指定. Defaults to "cpu".
+
+        Yields:
+            Any: 指定した :py:class:`~monaka.predictor.Encoder` が出力する結果
+        """
         encoder = Encoder.by_name(encoder_name)()
 
         dataset = LUWJsonLDataset(input, **self.dataeset_options)
@@ -1144,28 +1587,128 @@ class Predictor:
         self.model.to(device)
 
 
-        for data in dataloader:
-            #word_ids = [sbw.word_ids() for sbw in data["subwords"]]
-            subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(device)
-            word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(device)
-            pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(device) if "pos_ids" in data else None
+        with torch.no_grad():
+            for data in dataloader:
+                #word_ids = [sbw.word_ids() for sbw in data["subwords"]]
+                subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(device)
+                word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(device)
+                pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(device) if "pos_ids" in data else None
 
-            out = self.model(subwords, word_ids, pos_ids)
-            pred = torch.argmax(out, dim=-1) # batch, len, 
+                out = self.model(subwords, word_ids, pos_ids)
+                pred = torch.argmax(out, dim=-1) # batch, len, 
+                tops = torch.topk(out, len(self.label_dic), dim=-1)
 
-            pred_np = pred.detach().cpu().numpy()
-            for prd, wids, sentence, tokens, pos in zip(pred_np, word_ids, data["sentence"], data["tokens"], data["pos"]):
-                if not dataset.label_for_all_subwords:
-                    labels = self.extract_labels(None, prd)
-                else:
-                    labels = self.extract_labels(wids, prd)
-                res = self.decoder.decode(tokens, pos, labels)
-                res["sentence"] = sentence
-                yield encoder.encode(**res)
+                pred_np = pred.detach().cpu().numpy()
+                tops_np = tops.indices.detach().cpu().numpy()
+                prv_tokens = None
+                prv_pos = None
+                prv_labels = None
+                for prd, wids, sentence, tokens, pos, meta, fold, top in zip(pred_np, word_ids, data["sentence"], data["tokens"], data["pos"], data.get("features", {}), data["fold"], tops_np):
+                    if not dataset.label_for_all_subwords:
+                        labels = self.extract_labels(None, prd)
+                    else:
+                        labels = self.extract_labels(wids, prd)
+                    if fold < 0:
+                        res = self.decoder.decode(tokens, pos, labels)
+                        res = self.apply_single_suw_rule(res, top)
+                        res["sentence"] = sentence
+                        res["features"] = meta
+                        res["meta"] = meta
+                        out = encoder.encode(**res)
+                        yield out
+                    elif fold == 0:
+                        logger.warning(f"fold: 0 {''.join(tokens)}")
+                        prv_tokens = tokens
+                        prv_pos = pos
+                        prv_labels = labels
+                    else: #fold == 1
+                        logger.warning(f"fold: 1 {''.join(tokens)}")
+                        prv_tokens.extend(tokens)
+                        prv_pos.extend(pos)
+                        prv_labels.extend(labels)
+                        logger.warning(f"unfolding {''.join(prv_tokens)}")
+                        res = self.decoder.decode(prv_tokens, prv_pos, prv_labels)
+                        res = self.apply_single_suw_rule(res, top)
+                        res["sentence"] = sentence
+                        res["features"] = meta
+                        res["meta"] = meta
+                        out = encoder.encode(**res)
+                        yield out
 
-    def evaluate(self, inputfile: str, batch_size: int = 8, device: str="cpu", targets: List[str]=("luw", "chunk"), pos_level: int = -1, format_: str="pretty", 
-                suw_tokenizer: str=None, suw_tokenizer_option: dict=None, outputfile: str=None):
-        tokenizer = SUWTokenizer.by_name(suw_tokenizer)(**suw_tokenizer_option) if suw_tokenizer else None
+    def apply_single_suw_rule(self, decoder_out, top):
+        """簡易のルールベース処理を行う
+
+        Args:
+            decoder_out (Dict): :py:class:`~monaka.predictor.Decoder` が出力するデータ 学習モデルによる違いを吸収して統一したフォーマットにするための処理。
+            top (List[List[int]]): 推論時の尤度順に並べた推論結果
+
+        Returns:
+            Dict: ルール処理後のdecoder_out
+        """
+        singles = list(range(len(decoder_out["luw"])))
+        for i, l in enumerate(decoder_out["luw"]):
+            if '*' in l:
+                singles[i] = -1
+                if i > 0:
+                    singles[i-1] = -1
+
+        for s, pos, luw, t in zip(singles, decoder_out['pos'], decoder_out['luw'], top):
+            if s < 0:
+                continue
+            if '可能' not in pos:
+                if luw in pos: ## MeCabの品詞に活用型が含まれるので、長単位品詞がMeCabと一致していればそれを使う。
+                    decoder_out['luw'][s] = luw
+                else: # 品詞が異なる場合は、やむをえずMeCabを使う。(副作用ありなので、要相談)
+                    decoder_out['luw'][s] = pos
+
+            elif '名詞-普通名詞-助数詞可能' in pos:
+                decoder_out['luw'][s] = '名詞-普通名詞-一般'
+            elif '動詞-非自立可能' in pos:
+                decoder_out['luw'][s] = '動詞-一般'
+            elif '形容詞-非自立可能' in pos:
+                decoder_out['luw'][s] = '形容詞-一般'
+            elif '名詞-普通名詞-サ変可能' in pos:
+                decoder_out['luw'][s] = '名詞-普通名詞-一般'
+            elif '名詞-普通名詞-形状詞可能' in pos or '名詞-普通名詞-サ変形状詞可能' in pos:
+                for i in t:
+                    label = self.inv_label_dic[i]
+                    if '形状詞-一般' in label:
+                        decoder_out['luw'][s] = '形状詞-一般'
+                        break
+                    elif '名詞-普通名詞-一般' in label:
+                        decoder_out['luw'][s] = '名詞-普通名詞-一般'
+                        break
+            elif '名詞-普通名詞-副詞可能' in pos :
+                for i in t:
+                    label = self.inv_label_dic[i]
+                    if '副詞' in label:
+                        decoder_out['luw'][s] = '副詞'
+                        break
+                    elif '名詞-普通名詞-一般' in label:
+                        decoder_out['luw'][s] = '名詞-普通名詞-一般'
+                        break
+        return decoder_out
+
+    
+    def evaluate(self, inputfile: str, batch_size: int = 8, device: str="cpu", targets: List[str]=("luw", "chunk"), pos_level: int = -1, format_: str="pretty",  outputfile: str=None):
+        """推論し、評価を実行
+
+        Args:
+            inputfile (str): 
+                評価対象のファイルへのパス
+            batch_size (int, optional): 
+                バッチ数. Defaults to 8.
+            device (str, optional): 
+                用いるGPU番号か"cpu"を指定. Defaults to "cpu".
+            targets (List[str], optional): 
+                評価対象の項目 "luw"は長単位、"chunk"は文節. Defaults to ("luw", "chunk").
+            pos_level (int, optional): 
+                品詞の評価の際の評価対象の品詞階層. Defaults to -1.
+            format_ (str, optional): 
+                評価結果の出力フォーマット "pretty"か"json". Defaults to "pretty".
+            outputfile (str, optional): 
+                評価結果の出力先のパス. Defaults to None.
+        """
         dataset = LUWJsonLDataset(inputfile, **self.dataeset_options)
         dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=LUWJsonLDataset.collate_function)
         if outputfile is not None:
@@ -1239,8 +1782,15 @@ class Predictor:
 
 
 class EnsemblePredictor:
+    """平均アンサンブルを用いた長単位品詞・境界と文節境界のための推論器
 
-    def __init__(self, model_dirs: List[str], device: str="cpu", mask: Optional[str]=None) -> None:
+    Args:
+        model_dirs (List[str]): 学習済みモデルのあるフォルダへのパス(複数可。複数の場合はアンサンブルされる)
+        device (str, optional): 
+            用いるGPU番号か"cpu"を指定. Defaults to "cpu".
+    """
+
+    def __init__(self, model_dirs: List[str], device: str="cpu") -> None:
         self.model_dirs = model_dirs
         
         with open(os.path.join(model_dirs[0], "config.json")) as f:
@@ -1278,19 +1828,17 @@ class EnsemblePredictor:
             model.to(device)
         self.device = device
 
-        if mask is not None:
-            try:
-                with open(mask) as f:
-                    self.mask = json.load(f)
-                with open(posfile) as f:
-                    self.pos_dic = json.load(f)
-                    self.inv_pos = {v:k for k, v in self.pos_dic.items()}
-            except:
-                pass
-
 
     @staticmethod
     def find_best_pt(model_dir: str) -> str:
+        """ベストデータポイントを探す
+
+        Args:
+            model_dir (str): 学習済みモデルのあるフォルダへのパス
+
+        Returns:
+            str: ベストモデルポイントへのパス
+        """
         candidates = list()
         longest = -1
         idx = -1
@@ -1306,6 +1854,15 @@ class EnsemblePredictor:
         return candidates[idx]
     
     def extract_labels(self, word_ids, labels):
+        """テキストラベルからIDに変換
+
+        Args:
+            word_ids (List[int]): None出ない場合は、サブワードに対応する短単位語の文頭からの番号
+            labels (List[str]): テキストラベル列 
+
+        Returns:
+            List[int]: テキストラベルに対応するIDの列
+        """
         res = list()
         if word_ids is None:
             return [self.inv_label_dic.get(l, "unk") for l in labels]
@@ -1319,6 +1876,25 @@ class EnsemblePredictor:
         return res
 
     def predict(self, input: List[str], suw_tokenizer: str, suw_tokenizer_option: dict, encoder_name: str, batch_size: int = 8, **kwargs):
+        """モデル推論の実行
+        
+        Args:
+            input (List[str]): 
+                文のリスト(複数文を処理する)
+            suw_tokenizer (str): 
+                短単位語解析をするトークナイザ :py:class:`~monaka.tokenizer.Tokenizer` のサブクラス名。Registrableで付けた名前を利用する。
+                
+                例: :py:class:`~monaka.tokenizer.AutoLMTokenizer` の場合は、"auto"
+            suw_tokenizer_option (dict):
+                トークナイザの初期化に必要な引数。用いるTokenizerの引数を参照して設定。
+            encoder_name (str): 
+                出力先のフォーマットを指定する :py:class:`~monaka.predictor.Encoder` のサブクラス名。Registrableで付けた名前を利用する。
+            batch_size (int, optional): 
+                バッチ数. Defaults to 8.
+
+        Yields:
+            Any: 指定した :py:class:`~monaka.predictor.Encoder` が出力する結果
+        """
         encoder = Encoder.by_name(encoder_name)(**kwargs)
         tokenizer = SUWTokenizer.by_name(suw_tokenizer)(**suw_tokenizer_option)
 
@@ -1381,6 +1957,15 @@ class EnsemblePredictor:
                         yield out
 
     def apply_single_suw_rule(self, decoder_out, top):
+        """簡易のルールベース処理を行う
+
+        Args:
+            decoder_out (Dict): :py:class:`~monaka.predictor.Decoder` が出力するデータ 学習モデルによる違いを吸収して統一したフォーマットにするための処理。
+            top (List[List[int]]): 推論時の尤度順に並べた推論結果
+
+        Returns:
+            Dict: ルール処理後のdecoder_out
+        """
         singles = list(range(len(decoder_out["luw"])))
         for i, l in enumerate(decoder_out["luw"]):
             if '*' in l:
@@ -1427,6 +2012,19 @@ class EnsemblePredictor:
         
 
     def predict_raw(self, input, encoder_name: str, batch_size: int = 8):
+        """モデル推論の実行（短単位解析なし）
+
+        Args:
+            input (str): 
+                :py:class:`~monaka.dataset.LUWJsonLDataset` が読み取れるJSONテキスト
+            encoder_name (str): 
+                出力先のフォーマットを指定する :py:class:`~monaka.predictor.Encoder` のサブクラス名。Registrableで付けた名前を利用する。
+            batch_size (int, optional): 
+                バッチ数. Defaults to 8.
+
+        Yields:
+            Any: 指定した :py:class:`~monaka.predictor.Encoder` が出力する結果
+        """
         encoder = Encoder.by_name(encoder_name)()
 
         self.dataeset_options['store_all'] = True
@@ -1491,6 +2089,13 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoConfig, Seq2S
 from torch.utils.data import DataLoader
 
 class LemmaPredictor:
+    """語彙素推定のモデル推論を行う
+
+    Args:
+        model_dirs (List[str]): 学習済みモデルのあるフォルダへのパス(複数可。複数の場合はアンサンブルされる)
+        device (str, optional): 
+            用いるGPU番号か"cpu"を指定. Defaults to "cpu".
+    """
 
     def __init__(self, model_dir: str, device='cpu') -> None:
         self.model_dir = model_dir
@@ -1498,13 +2103,22 @@ class LemmaPredictor:
         with open(os.path.join(model_dir, "config.json")) as f:
             self.config = json.load(f)
         self.model = AutoModelForSeq2SeqLM.from_pretrained(os.path.join(model_dir, "last-checkpoint")).to(device)
-        #print(type(self.model))
         self.tokenizer = AutoTokenizer.from_pretrained(self.config['model_name'])
         self.special_tokens = list(self.tokenizer.all_special_tokens)
         self.special_tokens.extend([" ", "▁", "_"])
         self.trainer = Seq2SeqTrainer(self.model, Seq2SeqTrainingArguments(".", per_device_eval_batch_size=8, predict_with_generate=True))
 
     def predict(self, input: Dict, use_pos: bool=False) -> str:
+        """語彙素推定の実行
+
+        Args:
+            input (Dict): :py:class:`~monaka.dataset.LemmaJsonDataset` で読み取り可能な辞書型のJSONデータ
+            use_pos (bool, optional): 
+                特定の品詞は短単位語のものをそのまま使うか. Defaults to False.
+
+        Returns:
+            str: 推論された語彙素
+        """
         dataset = LemmaJsonDataset(input, **self.config['dataset_options'])
         #print(dataset[0])
         #print(dataset[0]['input_ids'].size())
@@ -1547,6 +2161,14 @@ class LemmaPredictor:
         return o.replace("▁", "")
     
     def tokens2output(self, tokens: List[str]) -> str:
+        """トークン出力を整理してテキストで返す
+
+        Args:
+            tokens (List[str]): 推論されたトークン列
+
+        Returns:
+            str: 復元された語彙素
+        """
         output = []
         for t in tokens:
             if t not in self.special_tokens:
@@ -1561,6 +2183,14 @@ class LemmaPredictor:
         return o.replace("▁", "")
     
     def batch_predict(self, inputs: Dict) -> List[str]:
+        """推論のバッチ実行
+
+        Args:
+            input (Dict): :py:class:`~monaka.dataset.LemmaJsonDataset` で読み取り可能な辞書型のJSONデータ
+
+        Returns:
+            List[str]: 推論された語彙素の列
+        """
         dataset = LemmaJsonDataset(input, **self.config['dataset_options'])
         loader = DataLoader(dataset=dataset, batch_size=self.config['batch_size'], shuffle=False)
         #print(data['input_ids'].size())
@@ -1576,6 +2206,14 @@ class LemmaPredictor:
                 res.append(self.tokens2output(self.tokenizer.convert_ids_to_tokens(output, skip_special_tokens=False)))
     
     def evaluate(self, jsonfile: str) -> Dict:
+        """評価の実行
+
+        Args:
+            jsonfile (str): 評価対象のファイルへのパス
+
+        Returns:
+            Dict: 評価結果の辞書型データ count: 評価数 acc: 正解率 diff: 正解との差分がある結果
+        """
         dataset = LemmaJsonDataset(jsonfile, **self.config['dataset_options'])
         loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
@@ -1598,6 +2236,11 @@ class LemmaPredictor:
 
 
 class DepPredictor:
+    """係り受け解析の推論の実行
+
+    Args:
+        model_dir (str): 学習済みモデルのあるフォルダへのパス
+    """
 
     def __init__(self, model_dir: str) -> None:
 
@@ -1633,6 +2276,25 @@ class DepPredictor:
         self.inv_rel_dic = {v:k for k, v in self.rel_dic.items()}
 
     def predict(self, input: List[str], dep_decoder_name: str, encoder_name: str, batch_size: int = 8, device: str="cpu", left2right: bool=False, **kwargs):
+        """モデル推論の実行
+
+        Args:
+            input (List[str]): 
+                :py:class:`~monaka.dataset.LUWJsonLDataset` が読み取れるJSONテキスト
+            dep_decoder_name (str): 
+                入力元のフォーマットを指定する :py:class:`~monaka.predictor.DepDecoder` のサブクラス名。Registrableで付けた名前を利用する。
+            encoder_name (str): 
+                出力先のフォーマットを指定する :py:class:`~monaka.predictor.DepEncoder` のサブクラス名。Registrableで付けた名前を利用する。
+            batch_size (int, optional): 
+                バッチ数. Defaults to 8.
+            device (str, optional): 
+                用いるGPU番号か"cpu"を指定. Defaults to "cpu".
+            left2right (bool, optional): 
+                推論する係り受けを文の先頭から文の終わり方向に限定する. Defaults to False.
+
+        Yields:
+            Any: 指定した :py:class:`~monaka.predictor.DepEncoder` が出力する結果
+        """
         encoder = DepEncoder.by_name(encoder_name)(**kwargs)
         decoder = DepDecoder.by_name(dep_decoder_name)(**kwargs)
 
@@ -1653,94 +2315,95 @@ class DepPredictor:
         self.model.eval()
 
         #print(self.inv_label_dic)
-        for data in dataloader:
-                subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(device) if 'input_ids' in data else None
-                if 'input_ids' in data:
-                    word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(device)
-                else:
-                    word_ids = pad_sequence([torch.LongTensor([i for i in range(len(tokens))]) for tokens in data['tokens']]  , batch_first=True, padding_value=-1).to(device)
-                #word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(device)
-                chunk_ids = pad_sequence(data["chunk_ids"], batch_first=True, padding_value=-1).to(device)
-                #dep_ids = pad_sequence(data["dep_ids"], batch_first=True, padding_value=-1).to(device)
-                #word_rel_ids = pad_sequence(data["word_rel_ids"], batch_first=True, padding_value=1).to(device)
-                #dep_rel_ids = pad_sequence(data["dep_rel_ids"], batch_first=True, padding_value=1).to(device)
-                pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(device) if "pos_ids" in data else None
-                wlsp_ids = pad_sequence(data["wlsp_ids"], batch_first=True, padding_value=1).to(device) if "wlsp_ids" in data else None
-                #wmask = word_rel_ids.ne(1)
-                #dmask = dep_ids.ne(-1)
-                #rmask = dep_rel_ids.ne(1)
+        with torch.no_grad():
+            for data in dataloader:
+                    subwords = pad_sequence(data["input_ids"], batch_first=True, padding_value=dataset.pad_token_id).to(device) if 'input_ids' in data else None
+                    if 'input_ids' in data:
+                        word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(device)
+                    else:
+                        word_ids = pad_sequence([torch.LongTensor([i for i in range(len(tokens))]) for tokens in data['tokens']]  , batch_first=True, padding_value=-1).to(device)
+                    #word_ids = pad_sequence([torch.LongTensor(js.word_ids()) for js in data["subwords"]], batch_first=True, padding_value=-1).to(device)
+                    chunk_ids = pad_sequence(data["chunk_ids"], batch_first=True, padding_value=-1).to(device)
+                    #dep_ids = pad_sequence(data["dep_ids"], batch_first=True, padding_value=-1).to(device)
+                    #word_rel_ids = pad_sequence(data["word_rel_ids"], batch_first=True, padding_value=1).to(device)
+                    #dep_rel_ids = pad_sequence(data["dep_rel_ids"], batch_first=True, padding_value=1).to(device)
+                    pos_ids = pad_sequence(data["pos_ids"], batch_first=True, padding_value=1).to(device) if "pos_ids" in data else None
+                    wlsp_ids = pad_sequence(data["wlsp_ids"], batch_first=True, padding_value=1).to(device) if "wlsp_ids" in data else None
+                    #wmask = word_rel_ids.ne(1)
+                    #dmask = dep_ids.ne(-1)
+                    #rmask = dep_rel_ids.ne(1)
 
-                dep_out, deprel_out, word_out  = self.model(subwords, word_ids, chunk_ids, pos_ids, wlsp_ids)
-                #deprel_out = deprel_out.permute((0,2,3,1)) # [batch, chunk_class, chunk_len, chunk_len] -> [batch, chunk_len, chunk_len, chunk_class]
-                #dep_pred = torch.argmax(dep_out, dim=-1)
-                softmax = torch.nn.functional.softmax
-                deprel_out[:, self.rel_dic['root'], :, :] = -1000.
-                rel_pred = torch.argmax(deprel_out, dim=1) #[batch, chunk_len, chunk_len]
-                shead_ids = [i for k, i in self.label_dic.items() if 'shead' in k]
-                wrd_shead_np = softmax(word_out[:, :, shead_ids], dim=-1).detach().cpu().numpy()
-                word_out2 = word_out.detach()
-                word_out2[:, :, shead_ids] = -1000.
-                wrd_pred = torch.argmax(word_out2, dim=-1)
+                    dep_out, deprel_out, word_out  = self.model(subwords, word_ids, chunk_ids, pos_ids, wlsp_ids)
+                    #deprel_out = deprel_out.permute((0,2,3,1)) # [batch, chunk_class, chunk_len, chunk_len] -> [batch, chunk_len, chunk_len, chunk_class]
+                    #dep_pred = torch.argmax(dep_out, dim=-1)
+                    softmax = torch.nn.functional.softmax
+                    deprel_out[:, self.rel_dic['root'], :, :] = -1000.
+                    rel_pred = torch.argmax(deprel_out, dim=1) #[batch, chunk_len, chunk_len]
+                    shead_ids = [i for k, i in self.label_dic.items() if 'shead' in k]
+                    wrd_shead_np = softmax(word_out[:, :, shead_ids], dim=-1).detach().cpu().numpy()
+                    word_out2 = word_out.detach()
+                    word_out2[:, :, shead_ids] = -1000.
+                    wrd_pred = torch.argmax(word_out2, dim=-1)
 
-                dep_pred_np = softmax(dep_out, dim=-1).detach().cpu().numpy()
-                rel_pred_np = rel_pred.detach().cpu().numpy()
-                wrd_pred_np = wrd_pred.detach().cpu().numpy()
-                nulls = ['_' for _ in data['tokens']]
+                    dep_pred_np = softmax(dep_out, dim=-1).detach().cpu().numpy()
+                    rel_pred_np = rel_pred.detach().cpu().numpy()
+                    wrd_pred_np = wrd_pred.detach().cpu().numpy()
+                    nulls = ['_' for _ in data['tokens']]
 
-                for depp, relp, wrdp, shp, bnst, pos, tokens, bid, sentid, text, upos, misc, lemma, undc in zip(dep_pred_np, rel_pred_np, wrd_pred_np, wrd_shead_np, 
-                        data['bunsetsu'], data['pos'], data['tokens'], data['bid'], data['sent_id'], data['text'], 
-                        data.get('upos', nulls), data.get('misc', nulls), data.get('lemma', nulls), data.get('unidic', nulls)):
-                    res = {
-                        "sent_id": sentid,
-                        "text": text,
-                        "tokens": tokens,
-                        "bid": bid,
-                        "bunsetsu": bnst,
-                        "pos": pos,
-                        "upos": upos,
-                        "misc": misc,
-                        "lemma": lemma,
-                        "unidic": undc
-                    }
-                    roots = np.array([depp[i,i] for i in range(len(bnst))])
-                    ndepp = np.hstack((roots.reshape(len(bnst), 1), depp[:len(bnst), :len(bnst)]))
-                    ndepp = np.vstack((np.hstack(([0], roots)).reshape(1, len(bnst)+1), ndepp))
-                    #for i in range(ndepp.shape[0]):
-                    #    ndepp[i, i] = -1000.
-                    heads, _ = chu_liu_edmonds(ndepp)
-                    #print(heads, len(heads), len(bnst))
-                    #print(heads.index(0))
-                    root = heads.index(0) -1
-                    if left2right:
-                        x = list()
-                        y = list()
-                        for i in range(len(bnst)):
-                            for j in range(0, root):
-                                x.append(j)
-                                y.append(i)
-                            for j in range(root+1, len(bnst)):
-                                x.append(i)
-                                y.append(j)
-                        ndepp[(x, y)] = -1000.
+                    for depp, relp, wrdp, shp, bnst, pos, tokens, bid, sentid, text, upos, misc, lemma, undc in zip(dep_pred_np, rel_pred_np, wrd_pred_np, wrd_shead_np, 
+                            data['bunsetsu'], data['pos'], data['tokens'], data['bid'], data['sent_id'], data['text'], 
+                            data.get('upos', nulls), data.get('misc', nulls), data.get('lemma', nulls), data.get('unidic', nulls)):
+                        res = {
+                            "sent_id": sentid,
+                            "text": text,
+                            "tokens": tokens,
+                            "bid": bid,
+                            "bunsetsu": bnst,
+                            "pos": pos,
+                            "upos": upos,
+                            "misc": misc,
+                            "lemma": lemma,
+                            "unidic": undc
+                        }
+                        roots = np.array([depp[i,i] for i in range(len(bnst))])
+                        ndepp = np.hstack((roots.reshape(len(bnst), 1), depp[:len(bnst), :len(bnst)]))
+                        ndepp = np.vstack((np.hstack(([0], roots)).reshape(1, len(bnst)+1), ndepp))
+                        #for i in range(ndepp.shape[0]):
+                        #    ndepp[i, i] = -1000.
                         heads, _ = chu_liu_edmonds(ndepp)
-                    #roots = np.array([depp[i,i] if np.argmax(depp[i, :len(bnst)]) == i else -1000. for i in range(len(bnst))])
-                    #root = np.argmax(roots)
-                    #for i in range(depp.shape[0]):
-                    #    depp[i, i] = -1000.
-                    #dep = np.argmax(depp, axis=-1)
-                    res['rel'] = [self.inv_label_dic.get(v, 'nmod') for v,_ in zip(wrdp, tokens)]
-                    res['dependency'] = [{"id": i, "head": int(u) -1 if u > 0 else root, "rel": self.inv_rel_dic.get(v[u-1], 'nmod')} for i, (u,v,_) in enumerate(zip(heads[1:], relp, bnst))]
-                    for d in res['dependency']:
-                        if d['id'] == d['head']:
-                            d['head'] = root
-                    #res['dependency'][root]['head'] = res['dependency'][root]['id']
-                    res['dependency'][root]['rel'] = "root"
-                    bid = np.array(bid)
-                    indices = np.arange(len(bid))
-                    #for i in range(np.max(bid)+1):
-                    #    ind = np.where(bid == i)
-                        #print(ind)
-                    #    j = np.argmax(shp[ind])
-                    #    k = indices[ind][j]
-                    #    res['rel'][k] = 'shead'
-                    yield encoder(res)
+                        #print(heads, len(heads), len(bnst))
+                        #print(heads.index(0))
+                        root = heads.index(0) -1
+                        if left2right:
+                            x = list()
+                            y = list()
+                            for i in range(len(bnst)):
+                                for j in range(0, root):
+                                    x.append(j)
+                                    y.append(i)
+                                for j in range(root+1, len(bnst)):
+                                    x.append(i)
+                                    y.append(j)
+                            ndepp[(x, y)] = -1000.
+                            heads, _ = chu_liu_edmonds(ndepp)
+                        #roots = np.array([depp[i,i] if np.argmax(depp[i, :len(bnst)]) == i else -1000. for i in range(len(bnst))])
+                        #root = np.argmax(roots)
+                        #for i in range(depp.shape[0]):
+                        #    depp[i, i] = -1000.
+                        #dep = np.argmax(depp, axis=-1)
+                        res['rel'] = [self.inv_label_dic.get(v, 'nmod') for v,_ in zip(wrdp, tokens)]
+                        res['dependency'] = [{"id": i, "head": int(u) -1 if u > 0 else root, "rel": self.inv_rel_dic.get(v[u-1], 'nmod')} for i, (u,v,_) in enumerate(zip(heads[1:], relp, bnst))]
+                        for d in res['dependency']:
+                            if d['id'] == d['head']:
+                                d['head'] = root
+                        #res['dependency'][root]['head'] = res['dependency'][root]['id']
+                        res['dependency'][root]['rel'] = "root"
+                        bid = np.array(bid)
+                        indices = np.arange(len(bid))
+                        #for i in range(np.max(bid)+1):
+                        #    ind = np.where(bid == i)
+                            #print(ind)
+                        #    j = np.argmax(shp[ind])
+                        #    k = indices[ind][j]
+                        #    res['rel'][k] = 'shead'
+                        yield encoder(res)

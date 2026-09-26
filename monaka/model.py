@@ -14,7 +14,7 @@ import torch.distributed as dist
 from torch.nn.utils.rnn import pad_sequence
 
 from registrable import Registrable
-from typing import Dict
+from typing import Dict, Tuple
 from monaka.module import MLP, LMEmbedding, Biaffine, SelfAttentionPooling, PositionalEncoding
 from monaka.mylogging import logger
 
@@ -107,7 +107,7 @@ class LUWLemmaModel(nn.Module, Registrable):
 @LUWParserModel.register("SeqTagging")
 class SeqTaggingParserModel(LUWParserModel):
     """
-    SubwordレベルでSequence Taggingするモデル。Registableで呼び出すときは`SeqTagging`
+    SubwordレベルでSequence Taggingするモデル。:py:class:`~Registrable`で呼び出すときは`SeqTagging`
 
     Args:
         n_pos (int):
@@ -208,7 +208,7 @@ class SeqTaggingParserModel(LUWParserModel):
 @LUWParserModel.register("WordTagging")
 class WordTaggingParserModel(LUWParserModel):
     """
-    WordレベルでSequence Taggingするモデル Registableで呼び出すときは`WordTagging`
+    WordレベルでSequence Taggingするモデル :py:class:`~Registrable`で呼び出すときは`WordTagging`
 
     Args:
         n_pos (int):
@@ -344,7 +344,7 @@ class WordTaggingParserModel(LUWParserModel):
 @LUWParserModel.register("ChunkDep")
 class ChunkDependencyParserModel(LUWParserModel):
     """
-    文節係り受けモデル  Registableで呼び出すときは`ChunkDep`
+    文節係り受けモデル  :py:class:`~Registrable`で呼び出すときは`ChunkDep`
 
     Args:
         n_pos (int):
@@ -500,12 +500,25 @@ class ChunkDependencyParserModel(LUWParserModel):
         """
         return torch.max(value, **kwargs).values
 
-    def forward(self, words: torch.Tensor, word_ids: torch.Tensor, chunk_ids: torch.Tensor, pos: torch.Tensor, wlsp: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+    def forward(self, words: torch.Tensor, word_ids: torch.Tensor, chunk_ids: torch.Tensor, pos: torch.Tensor, wlsp: torch.Tensor, *args, **kwargs) -> Tuple[torch.Tensor]:
         """
-        words: [batch, subwords_len]
-        word_ids: [batch, subword_len] the indices pointing to original words
-        chunk_ids: [batch, word_len] the indices pointing to original words
-        pos: [batch, words_len]
+        Args:
+            words (~torch.Tensor):
+                入力文をサブワード分割して埋め込み表現に変換したもの。shape [batch, subwords_len, emb], subwords_lenは最大サブワード長と一致
+            word_ids (~torch.Tensor):
+                各サブワードに対応する短単位語の文頭からの位置（0始まり）。 shape [batch, subword_len]
+            chunk_ids (~torch.Tensor):
+                各短単位語が所属する文節の文頭からの位置（0始まり）。 shape [batch, word_len]
+            pos (~torch.Tensor):
+                サブワードに対応する短単位品詞のID列 shape [batch, words_len] words_lenは最大短単位語数に一致
+        
+        Returns:
+            Tuple[~torch.Tensor]: 
+                dep_out [batch, chunk_len, chunk_len] 係り受け関係が存在するか
+
+                deprel_out [batch, chunk_class, chunk_len, chunk_len] 係り受け関係ラベルの推定
+
+                word_out [batch, words_len, word_class] 短単位語に付与されるラベル（文節内係り受けなど）
         """
 
         if self.m_lm:
@@ -577,16 +590,32 @@ class ChunkDependencyParserModel(LUWParserModel):
     
     def loss(self, dep_out: torch.Tensor, deprel_out: torch.Tensor, word_out: torch.Tensor, 
              dep_labels: torch.Tensor, deprel_labels: torch.Tensor, word_labels: torch.Tensor, 
-             word_mask: torch.Tensor, dep_mask: torch.Tensor, rel_mask: torch.Tensor, *args, **kwargs):
-        """
-        dep_out: [batch, chunk_len, chunk_len]
-        deprel_out: [batch, chunk_class, chunk_len, chunk_len]
-        word_out: [batch, word_len, word_class]
-        dep_labels: [batch, chunk_len]
-        deprel_labels: [batch, chunk_len, chunk_class]
-        word_labels: [batch, word_len]
-        word_mask: mask
-        dep_mask
+             word_mask: torch.Tensor, dep_mask: torch.Tensor, rel_mask: torch.Tensor, *args, **kwargs) ->Tuple[torch.Tensor]:
+        """損失関数
+
+        Args:
+            dep_out (~torch.Tensor): 
+                [batch, chunk_len, chunk_len] 文節係り受け関係の推定
+            deprel_out (~torch.Tensor): 
+                [batch, chunk_class, chunk_len, chunk_len] 文節係り受け関係ラベルの推定
+            word_out (~torch.Tensor):
+                [batch, word_len, word_class] 短単位語に付与されるラベル（文節内係り受けなど）の推定
+            dep_labels (~torch.Tensor):
+                [batch, chunk_len] 係り受けの正解
+            deprel_labels (~torch.Tensor):
+                [batch, chunk_len, chunk_class] 係り受け関係ラベルの正解
+            word_labels (~torch.Tensor):
+                [batch, word_len] 短単位語に付与されるラベル（文節内係り受けなど）の正解
+            word_mask (~torch.Tensor):
+                [batch, word_len] 短単位語に付与されるラベルの存在範囲を示すmask
+            dep_mask (~torch.Tensor):
+                [batch, chunk_len] 係り受け関係の存在範囲を示すmask
+            rel_mask (~torch.Tensor):
+                [batch, chunk_class, chunk_len] 係り受け関係ラベルの存在範囲を示すmask
+
+        Returns:
+            Tuple[~torch.Tensor]:
+                (全体の損失, 係り受けの損失, 係り受け関係ラベルの損失, 短単位語ラベルの損失)
         """
         out_size = dep_out.size()
         cmask = dep_mask[:out_size[0], :out_size[1]]

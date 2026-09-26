@@ -68,10 +68,10 @@ monaka.module module
    :undoc-members:
    :show-inheritance:
 
-.. monaka.mylogging module
-.. =======================
-.. 
-.. .. automodule:: monaka.mylogging
+monaka.mylogging module
+=======================
+
+.. automodule:: monaka.mylogging
    :members:
    :undoc-members:
    :show-inheritance:
